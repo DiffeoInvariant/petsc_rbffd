@@ -22,6 +22,7 @@ struct _p_rbf_node {
 struct _p_rbf_problem {
   KDTree         tree;
   Vec            *node_points;
+  RBFNode        *nodes;
   RBFType        node_type;
   RBFProblemType problem_type;
   TS             ts;
@@ -234,6 +235,9 @@ PetscErrorCode RBFProblemDestroy(RBFProblem prob)
   if(prob->ts){
     ierr = TSDestroy(&prob->ts);
   }
+  if(prob->nodes){
+    ierr = PetscFree(prob->nodes);CHKERRQ(ierr);
+  }
   ierr = PetscFree(prob);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
@@ -272,18 +276,18 @@ PetscErrorCode RBFProblemSetNodes(RBFProblem prob, Vec *locs, void *node_ctx)
     }
   }
   /* ^ confirms that sz[i] are equal for all i */
+  ierr = PetscMalloc1(sz[0], &(prob->nodes));CHKERRQ(ierr);
   for(j=0; j<sz[0]; ++j){
-    RBFNode node;
     for(i=0; i<k; ++i){
       ierr = VecGetArrayRead(locs[i], &x);CHKERRQ(ierr);
       loc[i] = x[j];
       ierr = VecRestoreArrayRead(locs[i], &x);CHKERRQ(ierr);
     }
-    ierr = RBFNodeCreate(&node, k);CHKERRQ(ierr);
-    ierr = RBFNodeSetType(node, prob->node_type, node_ctx);CHKERRQ(ierr);
-    ierr = RBFNodeSetLocation(node, loc);CHKERRQ(ierr);
+    ierr = RBFNodeCreate(&(prob->nodes[j]), k);CHKERRQ(ierr);
+    ierr = RBFNodeSetType(prob->nodes[j], prob->node_type, node_ctx);CHKERRQ(ierr);
+    ierr = RBFNodeSetLocation(prob->nodes[j], loc);CHKERRQ(ierr);
     
-    ierr = KDTreeInsert(prob->tree, loc, node);CHKERRQ(ierr);
+    ierr = KDTreeInsert(prob->tree, loc, prob->nodes[j]);CHKERRQ(ierr);
   }
   PetscFunctionReturn(0);
 }

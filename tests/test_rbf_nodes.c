@@ -1,10 +1,10 @@
 #include "rbf.h"
-
+#include <stdlib.h>
 
 int main(int argc, char **argv)
 {
 
-  PetscInt i,j, k=3, N=100;
+  PetscInt i,j, k=3, N=10000;
   PetscReal d, eps=0.1;
   Vec       X[3];
   PetscScalar *x, loc[3];
@@ -20,7 +20,7 @@ int main(int argc, char **argv)
     ierr = VecSetSizes(X[i], PETSC_DECIDE, N);CHKERRQ(ierr);
     ierr = VecGetArray(X[i], &x);CHKERRQ(ierr);
     for(j=0; j<N; ++j){
-      x[j] = 0.5*j;
+      x[j] = -200.0 + (PetscReal)((rand() / ((RAND_MAX + 1u)/500))) * 0.5*j;
     }
     ierr = VecRestoreArray(X[i], &x);CHKERRQ(ierr);
   }
@@ -30,19 +30,28 @@ int main(int argc, char **argv)
   ierr = RBFProblemSetNodeType(prob, RBF_GA);CHKERRQ(ierr);
   ierr = RBFProblemSetNodes(prob, X, &eps);CHKERRQ(ierr);
 
+  for(i=0; i<k; ++i){
+    ierr = VecDestroy(&X[i]);CHKERRQ(ierr);
+  }
   ierr = RBFProblemGetTree(prob, &tree);CHKERRQ(ierr);
   ierr = KDTreeSize(tree, &N);CHKERRQ(ierr);
   PetscPrintf(PETSC_COMM_WORLD, "Tree contains %d nodes.\n", N);
 
   loc[0] = 1.0; loc[1] = 1.0; loc[2] = 1.2;
-  ierr = KDTreeFindWithinRange(tree, loc, 1.5, &nns);CHKERRQ(ierr);
+  ierr = KDTreeFindWithinRange(tree, loc, 1500.0, &nns);CHKERRQ(ierr);
   ierr = KDValuesSize(nns, &k);CHKERRQ(ierr);
-  PetscPrintf(PETSC_COMM_WORLD, "Result contains %d elements within distance 1.5 of (1.0, 1.0, 1.2) (expected 3).\n", k);
+  PetscPrintf(PETSC_COMM_WORLD, "Result contains %d elements within distance 1500 of (1.0, 1.0, 1.2).\n", k);
   ierr = KDValuesGetNodeDistance(nns, &d);CHKERRQ(ierr);
   PetscPrintf(PETSC_COMM_WORLD, "Closest node is at distance %.4f.\n", d);
+  i = KDValuesNext(nns);
+  while(i != KDValuesEnd(nns)){
+    ierr = KDValuesGetNodeDistance(nns, &d);CHKERRQ(ierr);
+    PetscPrintf(PETSC_COMM_WORLD, "Next-closest node is at distance %.4f.\n", d);
+    i = KDValuesNext(nns);
+  }
   ierr = KDValuesDestroy(nns);CHKERRQ(ierr);
   ierr = RBFProblemDestroy(prob);CHKERRQ(ierr);
-
+  
   ierr = PetscFinalize();
   return 0;
 }

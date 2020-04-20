@@ -428,7 +428,7 @@ PetscErrorCode KDValuesBegin(KDValues vals)
 
 PetscInt KDValuesEnd(const KDValues vals)
 {
-  return (vals->resiter == 0);
+  return 0;
 }
 
 PetscInt KDValuesNext(KDValues vals)
@@ -465,7 +465,11 @@ PetscErrorCode KDValuesGetNodeData(const KDValues vals, void *nodedata, const Pe
 PetscErrorCode KDValuesGetNodeDistance(const KDValues vals, PetscReal *dist)
 {
   PetscFunctionBeginUser;
-  *dist = vals->resiter->dist;
+  if(vals->resiter){
+    *dist = vals->resiter->dist;
+  } else {
+    SETERRQ(PETSC_COMM_WORLD, 1, "Cannot get node distance for KDValues without any values!\n");
+  }
   PetscFunctionReturn(0);
 }
   

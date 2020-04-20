@@ -286,7 +286,7 @@ PetscErrorCode KDTreeFindNearest(const KDTree tree, const PetscScalar *loc, KDVa
   ierr = kdbox_destroy(box);
 
   if(resnode){
-    ierr = result_list_insert(resset->reslist, resnode, -1.0);CHKERRQ(ierr);
+    ierr = result_list_insert(resset->reslist, resnode, PetscSqrtReal(square_dist));CHKERRQ(ierr);
     resset->size = 1;
     KDValuesBegin(resset);
     *nearest = resset;
@@ -320,7 +320,7 @@ static PetscInt find_nearest_node(struct kdnode *node, const PetscScalar *loc, P
     dsq += _sqr(node->loc[i] - loc[i]);
   }
   if(dsq <= _sqr(max_dist)){
-    ierr = result_list_insert(reslist, node, ordered ? dsq : -1.0);CHKERRQ(ierr);
+    ierr = result_list_insert(reslist, node, ordered ? PetscSqrtReal(dsq) : -1.0);CHKERRQ(ierr);
     total = 1;
   }
 
@@ -343,7 +343,7 @@ PetscErrorCode KDTreeFindWithinRange(const KDTree tree, const PetscScalar *loc, 
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
   ierr = KDValuesCreate(nodes, tree);CHKERRQ(ierr);
-  nnode = find_nearest_node(tree->root, loc, range, (*nodes)->reslist, PETSC_FALSE, tree->k);
+  nnode = find_nearest_node(tree->root, loc, range, (*nodes)->reslist, PETSC_TRUE, tree->k);
   if(nnode < 0){
     SETERRQ(PETSC_COMM_WORLD, 1, "Error, KDTreeFindWithinRange could not find any nodes!\n");
   }
@@ -462,7 +462,13 @@ PetscErrorCode KDValuesGetNodeData(const KDValues vals, void *nodedata, const Pe
   PetscFunctionReturn(0);
 }
 
-
+PetscErrorCode KDValuesGetNodeDistance(const KDValues vals, PetscReal *dist)
+{
+  PetscFunctionBeginUser;
+  *dist = vals->resiter->dist;
+  PetscFunctionReturn(0);
+}
+  
 PetscErrorCode KDValuesDestroy(KDValues vals)
 {
   PetscErrorCode ierr;

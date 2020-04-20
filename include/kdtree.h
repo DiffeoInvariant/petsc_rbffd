@@ -69,7 +69,9 @@ extern "C" {
   PetscErrorCode KDValuesSize(const KDValues vals, PetscInt *n);
 
   /* set loc to NULL if you don't want to set the node's location */
-  PetscErrorCode KDValuesGetNodeData(const KDValues vals, void *node, const PetscScalar *loc);
+  PetscErrorCode KDValuesGetNodeData(const KDValues vals, void *nodedata, const PetscScalar *loc); 
+
+  PetscErrorCode KDValuesGetNodeDistance(const KDValues vals, PetscReal *dist);
 
   /* iterator functions for result values */
   PetscErrorCode KDValuesBegin(KDValues vals);

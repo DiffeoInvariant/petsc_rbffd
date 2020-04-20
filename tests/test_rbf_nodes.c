@@ -7,9 +7,10 @@ int main(int argc, char **argv)
   PetscInt i,j, k=3, N=100;
   PetscReal eps=0.1;
   Vec       X[3];
-  PetscScalar *x;
+  PetscScalar *x, loc[3];
   RBFProblem prob;
   KDTree     tree;
+  KDValues   nns;
   PetscErrorCode ierr;
 
   ierr = PetscInitialize(&argc, &argv, NULL, NULL);CHKERRQ(ierr);
@@ -32,6 +33,12 @@ int main(int argc, char **argv)
   ierr = RBFProblemGetTree(prob, &tree);CHKERRQ(ierr);
   ierr = KDTreeSize(tree, &N);CHKERRQ(ierr);
   PetscPrintf(PETSC_COMM_WORLD, "Tree contains %d nodes.\n", N);
+
+  loc[0] = 1.0; loc[1] = 1.0; loc[2] = 1.05;
+  ierr = KDTreeFindWithinRange(tree, loc, 1.5, &nns);CHKERRQ(ierr);
+  ierr = KDValuesSize(nns, &k);CHKERRQ(ierr);
+  PetscPrintf(PETSC_COMM_WORLD, "Result contains %d elements within distance 1.5 of (1.0, 1.0, 1.0) (expected 3).\n", k);
+  ierr = KDValuesDestroy(nns);CHKERRQ(ierr);
   ierr = RBFProblemDestroy(prob);CHKERRQ(ierr);
 
   ierr = PetscFinalize();

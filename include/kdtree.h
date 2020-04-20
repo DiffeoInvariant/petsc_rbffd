@@ -44,6 +44,8 @@ extern "C" {
 
   PetscErrorCode KDTreeDestroy(KDTree tree);
 
+  PetscErrorCode KDTreeGetK(KDTree tree, PetscInt *k);
+
   PetscErrorCode KDTreeClear(KDTree tree);
 
   PetscErrorCode KDTreeInsert(KDTree tree, const PetscScalar *loc, void *node_data);
@@ -61,6 +63,8 @@ extern "C" {
   PetscErrorCode KDTreeFindWithinRange(const KDTree tree, const PetscScalar *loc, PetscReal range, KDValues *nodes);
 
   PetscErrorCode KDTreeFindWithinRange3D(const KDTree tree, PetscScalar x, PetscScalar y, PetscScalar z, PetscReal range);
+
+  PetscErrorCode KDTreeSize(const KDTree tree, PetscInt *N);
 
   PetscErrorCode KDValuesSize(const KDValues vals, PetscInt *n);
 

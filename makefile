@@ -7,18 +7,21 @@ LDFLAGS=-shared $(PETSC_WITH_EXTERNAL_LIB)
 include $(PETSC_DIR)/$(PETSC_ARCH)/lib/petsc/conf/petscvariables
 include $(PETSC_DIR)/$(PETSC_ARCH)/lib/petsc/conf/petscrules
 
-.PHONY: all kdtree rbf
+.PHONY: all testkd testrbf kdtree rbf
 
 KDTREE_INCL=include
 RBF_INCL=include
 
-all: kdtree rbf
+all: kdtree rbf testrbf testkd
 
 kdtree: src/kdtree.c
 	$(CC) $(CFLAGS) $(LDFLAGS) $(PETSC_CC_INCLUDES) $^ -I$(KDTREE_INCL) -o bin/libkdtree.so
 
-rbf: src/rbf.c
-	$(CC) $(CFLAGS) $(LDFLAGS) $(PETSC_CC_INCLUDES) $^ -I$(RBF_INCL) -Lbin/ -lkdtree  -o bin/librbf.so
+rbf: src/rbf.c src/kdtree.c
+	$(CC) $(CFLAGS) $(LDFLAGS) $(PETSC_CC_INCLUDES) $^ -I$(RBF_INCL) -o bin/librbf.so
 
-test: tests/test_single_query.c
+testrbf: tests/test_rbf_nodes.c
+	$(CC) -std=c99 -O3 -march=native -mtune=native -g  $(PETSC_CC_INCLUDES) $(PETSC_WITH_EXTERNAL_LIB) $^ -I$(KDTREE_INCL) -Lbin/ -lrbf -o tests/trbfn
+
+testkd: tests/test_single_query.c
 	$(CC) -std=c99 -O3 -march=native -mtune=native -g  $(PETSC_CC_INCLUDES) $(PETSC_WITH_EXTERNAL_LIB) $^ -I$(KDTREE_INCL) -Lbin/ -lkdtree -o tests/tsq

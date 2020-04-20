@@ -1,6 +1,8 @@
 #include "rbf.h"
 #include <petscsys.h>
-
+#include <petscts.h>
+#include <petscksp.h>
+#include <petscsnes.h>
 
 typedef PetscReal(*UniRBF)(PetscReal);
 
@@ -16,6 +18,17 @@ struct _p_rbf_node {
   PetscBool      allocated_ctx;
   void           *para_ctx;
 };
+
+struct _p_rbf_problem {
+  KDTree         tree;
+  Vec            *node_points;
+  RBFType        node_type;
+  RBFProblemType problem_type;
+  TS             ts;
+  KSP            ksp;
+  PC             pc;
+};
+  
   
 struct _phs_ctx {
   PetscInt ord;
@@ -66,6 +79,7 @@ PetscErrorCode RBFNodeGetLocation(const RBFNode node, PetscScalar *location)
   PetscFunctionBeginUser;
   ierr = PetscArraycpy(location, node->loc, node->dim);CHKERRQ(ierr);
   PetscFunctionReturn(0);
+}
 
 #define _sqr(r) (r) * (r)
 static PetscReal gaussian_rbf(PetscReal r, void *ctx)
@@ -126,6 +140,9 @@ PetscErrorCode RBFNodeSetType(RBFNode node, RBFType type, void *ctx)
   } else {
     node->is_parametric = PETSC_TRUE;
     node->para_rbf = _preset_rbfs[type];
+    if(ctx){
+      node->para_ctx = ctx;
+    }
   }
   PetscFunctionReturn(0);
 }
@@ -197,3 +214,85 @@ PetscErrorCode RBFNodeEvaluateAtPoint(const RBFNode node, PetscScalar *point, Pe
   ierr = RBFNodeEvaluateAtDistance(node, PetscSqrtReal(dist), phi);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
+
+
+PetscErrorCode RBFProblemCreate(RBFProblem *prob, PetscInt ndim)
+{
+  PetscErrorCode ierr;
+  PetscFunctionBeginUser;
+  ierr = PetscNew(prob);CHKERRQ(ierr);
+  ierr = KDTreeCreate(&((*prob)->tree), ndim);CHKERRQ(ierr);
+  ierr = KDTreeSetNodeDestructor((*prob)->tree, (NodeDestructor)RBFNodeDestroy);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode RBFProblemDestroy(RBFProblem prob)
+{
+  PetscErrorCode ierr;
+  PetscFunctionBeginUser;
+  ierr = KDTreeDestroy(prob->tree);CHKERRQ(ierr);
+  if(prob->ts){
+    ierr = TSDestroy(&prob->ts);
+  }
+  ierr = PetscFree(prob);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+  
+
+PetscErrorCode RBFProblemSetType(RBFProblem prob, RBFProblemType type)
+{
+  PetscFunctionBeginUser;
+  prob->problem_type = type;
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode RBFProblemSetNodeType(RBFProblem prob, RBFType type)
+{
+  PetscErrorCode ierr;
+  PetscFunctionBeginUser;
+  prob->node_type = type;
+  PetscFunctionReturn(0);
+}
+  
+
+PetscErrorCode RBFProblemSetNodes(RBFProblem prob, Vec *locs, void *node_ctx)
+{
+  PetscErrorCode    ierr;
+  PetscInt          i, j, k;
+  const PetscScalar *x;
+  PetscFunctionBeginUser;
+
+  ierr = KDTreeGetK(prob->tree, &k);
+  PetscInt sz[k];
+  PetscScalar loc[k];
+  for(i=0; i<k; ++i){
+    ierr = VecGetLocalSize(locs[i], &sz[i]);CHKERRQ(ierr);
+    if(sz[i] != sz[0]){
+      SETERRQ3(PETSC_COMM_WORLD, 1, "RBF node location vectors must have the same number of components (%d), but dimension %d has %d components!\n", sz[0], i, sz[i]);
+    }
+  }
+  /* ^ confirms that sz[i] are equal for all i */
+  for(j=0; j<sz[0]; ++j){
+    RBFNode node;
+    for(i=0; i<k; ++i){
+      ierr = VecGetArrayRead(locs[i], &x);CHKERRQ(ierr);
+      loc[i] = x[j];
+      ierr = VecRestoreArrayRead(locs[i], &x);CHKERRQ(ierr);
+    }
+    ierr = RBFNodeCreate(&node, k);CHKERRQ(ierr);
+    ierr = RBFNodeSetType(node, prob->node_type, node_ctx);CHKERRQ(ierr);
+    ierr = RBFNodeSetLocation(node, loc);CHKERRQ(ierr);
+    
+    ierr = KDTreeInsert(prob->tree, loc, node);CHKERRQ(ierr);
+  }
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode RBFProblemGetTree(RBFProblem prob, KDTree *tree)
+{
+  PetscFunctionBeginUser;
+  *tree = prob->tree;
+  PetscFunctionReturn(0);
+}
+    
+  

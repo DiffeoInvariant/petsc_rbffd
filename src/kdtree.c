@@ -23,7 +23,7 @@ struct result_node {
 
 
 struct _p_kdtree {
-  PetscInt      k;
+  PetscInt      k, N;
   struct kdnode *root;
   struct kdbox  *bounding_box;
   NodeDestructor dtor;
@@ -56,6 +56,7 @@ PetscErrorCode KDTreeCreate(KDTree *tree, PetscInt k)
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
   ierr = PetscNew(tree);CHKERRQ(ierr);
+  (*tree)->N = 0;
   (*tree)->k = k;
   (*tree)->root = NULL;
   (*tree)->bounding_box = NULL;
@@ -68,10 +69,17 @@ PetscErrorCode KDTreeDestroy(KDTree tree)
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
   ierr = KDTreeClear(tree);CHKERRQ(ierr);
+  tree->k = 0;
   ierr = PetscFree(tree);CHKERRQ(ierr);
   PetscFunctionReturn(ierr);
 }
 
+PetscErrorCode KDTreeGetK(KDTree tree, PetscInt *k)
+{
+ PetscFunctionBeginUser;
+ *k = tree->k;
+ PetscFunctionReturn(0);
+}
 
 static void clear_box(struct kdnode *node, NodeDestructor dtor)
 {
@@ -97,6 +105,7 @@ PetscErrorCode KDTreeClear(KDTree tree)
     ierr = kdbox_destroy(tree->bounding_box);CHKERRQ(ierr);
     tree->bounding_box = NULL;
   }
+  tree->N = 0;
   PetscFunctionReturn(0);
 }
 
@@ -138,6 +147,7 @@ PetscErrorCode KDTreeInsert(KDTree tree, const PetscScalar *loc, void *node_data
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
   ierr = insert_box(&tree->root, loc, node_data, 0, tree->k);CHKERRQ(ierr);
+  tree->N += 1;
   if(!(tree->bounding_box)){
     tree->bounding_box = kdbox_create(tree->k, loc, loc);
   } else {
@@ -213,7 +223,12 @@ static void kdtree_nearest_helper(struct kdnode *node, const PetscScalar *loc,
 }
     
     
-    
+PetscErrorCode KDTreeSize(const KDTree tree, PetscInt *N)
+{
+  PetscFunctionBeginUser;
+  *N = tree->N;
+  PetscFunctionReturn(0);
+}
 
 static PetscErrorCode KDValuesCreate(KDValues *vals, KDTree parent_tree)
 {

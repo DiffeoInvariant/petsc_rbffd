@@ -1,0 +1,1 @@
+To build this software, simply edit the PETSC_DIR and PETSC_ARCH variables in the makefile to be correct for your PETSc installation, then do ```make all```.

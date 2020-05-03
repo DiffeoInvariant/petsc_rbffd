@@ -1,6 +1,7 @@
 #ifndef RBF_RBF_H
 #define RBF_RBF_H
 #include "kdtree.h"
+#include <petscdm.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -39,28 +40,37 @@ extern "C" {
    that takes only one real-valued parameter (other than r)*/
   extern PetscErrorCode RBFNodeSetEpsilon(RBFNode node, PetscReal eps);
 
+  extern PetscErrorCode RBFNodeSetPolyOrder(RBFNode node, PetscInt poly_order);
+
   extern PetscErrorCode RBFNodeSetPHS(RBFNode node, PetscInt ord, PetscReal eps);
+
+  extern PetscErrorCode RBFNodeViewPolynomialBasis(const RBFNode node);
 
   typedef PetscReal(*ParametricRBF)(PetscReal, void*);
   
-  PetscErrorCode RBFNodeSetParametricRBF(RBFNode node, ParametricRBF rbf, void *ctx);
+  extern PetscErrorCode RBFNodeSetParametricRBF(RBFNode node, ParametricRBF rbf, void *ctx);
 
-  PetscErrorCode RBFNodeEvaluateAtDistance(const RBFNode node, PetscReal r, PetscReal *phi);
+  extern PetscErrorCode RBFNodeEvaluateRBFAtDistance(const RBFNode node, PetscReal r, PetscReal *phi);
 
-  PetscErrorCode RBFNodeEvaluateAtPoint(const RBFNode node, PetscScalar *point, PetscReal *phi);
+  /* while EvaluateRBFAtDistance only evaluates the RBF, this evaluates the polynomial too */
+  extern PetscErrorCode RBFNodeEvaluateAtPoint(const RBFNode node, PetscScalar *point, PetscReal *phi);
 
-  PetscErrorCode RBFProblemCreate(RBFProblem *prob, PetscInt ndim);
+  extern PetscErrorCode RBFProblemCreate(RBFProblem *prob, PetscInt ndim);
 
-  PetscErrorCode RBFProblemDestroy(RBFProblem prob);
+  extern PetscErrorCode RBFProblemDestroy(RBFProblem prob);
 
-  PetscErrorCode RBFProblemSetType(RBFProblem prob, RBFProblemType type);
+  extern PetscErrorCode RBFProblemSetType(RBFProblem prob, RBFProblemType type);
 
-  PetscErrorCode RBFProblemSetNodeType(RBFProblem prob, RBFType type);
+  extern PetscErrorCode RBFProblemSetNodeType(RBFProblem prob, RBFType type);
+
+  extern PetscErrorCode RBFProblemSetPolynomialDegree(RBFProblem prob, PetscInt degree);
 
   /* locs is an array of Vecs, containing as many as there are spatial dimensions, and node_ctx is the context struct for the node (e.g. just a pointer to PetscReal for GA, etc) */
-  PetscErrorCode RBFProblemSetNodes(RBFProblem prob, Vec *locs, void *node_ctx);
+  extern PetscErrorCode RBFProblemSetNodes(RBFProblem prob, Vec *locs, void *node_ctx);
 
-  PetscErrorCode RBFProblemGetTree(RBFProblem prob, KDTree *tree);
+  extern PetscErrorCode RBFProblemGetTree(RBFProblem prob, KDTree *tree);
+
+  extern PetscErrorCode RBFProblemGetWeights(RBFProblem prob);
   
 
 

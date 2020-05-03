@@ -449,7 +449,7 @@ PetscErrorCode KDValuesSize(KDValues vals, PetscInt *n)
   }
 }
 
-PetscErrorCode KDValuesGetNodeData(const KDValues vals, void *nodedata, const PetscScalar *loc)
+PetscErrorCode KDValuesGetNodeData(const KDValues vals, void **nodedata, const PetscScalar *loc)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
@@ -457,7 +457,7 @@ PetscErrorCode KDValuesGetNodeData(const KDValues vals, void *nodedata, const Pe
     if(loc){
       ierr = PetscArraycpy(vals->resiter->node->loc, loc, vals->tree->k);CHKERRQ(ierr);
     }
-    nodedata = vals->resiter->node->data;
+    *nodedata = vals->resiter->node->data;
   }
   PetscFunctionReturn(0);
 }

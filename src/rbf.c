@@ -386,29 +386,31 @@ static PetscErrorCode rbf_interp_get_weight_problem(RBFProblem  prob,
   PetscScalar    *ll,lpl[nc], av[stencil_size][stencil_size], pvu[stencil_size][nc],pvl[nc][stencil_size], prow[nc];
   PetscInt       arowcol[stencil_size],pcol[nc];
 
+  /*PetscPrintf(PETSC_COMM_WORLD,"stencil_size: %d, nc: %d.\n", stencil_size, nc);*/
   
   /* create right-hand-side Vec */
-  ierr = VecCreateSeq(PETSC_COMM_SELF,L);CHKERRQ(ierr);
-  ierr = VecSetSizes(*L,PETSC_DECIDE,stencil_size+nc);CHKERRQ(ierr);
+  ierr = VecCreateSeq(PETSC_COMM_SELF,stencil_size+nc,L);CHKERRQ(ierr);
   ierr = VecSet(*L,0.0);CHKERRQ(ierr);
   ierr = VecSetUp(*L);CHKERRQ(ierr);
 
   ierr = VecGetArray(*L, &ll);CHKERRQ(ierr);
   for(i=0; i<stencil_size; ++i){
-    r2 = 0.0
-    for(j=0; j<prob->dim; ++j){
+    r2 = 0.0;
+    for(j=0; j<prob->dims; ++j){
       /* get locally-centered node locations and distance to this node*/
       dr = stencil_nodes[i]->centered_loc[j] = stencil_nodes[i]->loc[j] - target_point[j];
       r2 += _sqr(dr);
     }
     ierr = RBFNodeEvaluateRBFAtDistance(stencil_nodes[i],PetscSqrtReal(r2),&phi);CHKERRQ(ierr);
     ll[i] = coeff*phi;
+    /*PetscPrintf(PETSC_COMM_WORLD, "phi(r=%4.3e)=%4.3e.\n", PetscSqrtReal(r2),phi);*/
   }
   /* since polynomial spaces are not locally-centered, it doesn't matter which node's polyspace we 
      evaluate here, they all give the exact same values at the same point in the domain */
-  ierr = PetscSpaceEvaluate(stencil_nodes[0]->polyspace,1,target_point,lpl);CHKERRQ(ierr);
+  ierr = PetscSpaceEvaluate(stencil_nodes[0]->polyspace,1,target_point,lpl,NULL,NULL);CHKERRQ(ierr);
   for(i=stencil_size; i<stencil_size+nc; ++i){
-    ll[i] = coeff*lpl[i-stencil_size];
+    ll[i] = PetscIsNanReal(lpl[i-stencil_size]) ? 0.0 : coeff*lpl[i-stencil_size];
+    /*PetscPrintf(PETSC_COMM_WORLD, "ll[%d]=%4.e3.\n", i,ll[i]);*/
   }
   
   ierr = VecRestoreArray(*L,&ll);CHKERRQ(ierr);
@@ -430,19 +432,14 @@ static PetscErrorCode rbf_interp_get_weight_problem(RBFProblem  prob,
       ierr = RBFNodeEvaluateRBFAtDistance(stencil_nodes[i],PetscSqrtReal(r2),&av[i][j]);CHKERRQ(ierr);
     }
   }
-  ierr = MatSetValues(*AP,stencil_size,arowcol,stencil_size,arowcol,av,INSERT_VALUES);CHKERRQ(ierr);
-  /*ierr = MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
-  ierr = MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);*.
-
-  ierr = MatCreateSeqDense(PETSC_COMM_SELF,stencil_size,nc,NULL,&P);CHKERRQ(ierr);
-  ierr = MatSetUp(P);CHKERRQ(ierr);
+  ierr = MatSetValues(*AP,stencil_size,arowcol,stencil_size,arowcol,&av[0][0],INSERT_VALUES);CHKERRQ(ierr);
 
   /* polynomial component */
   for(i=0; i<stencil_size; ++i){
-    ierr = PetscSpaceEvaluate(stencil_nodes[i],1,stencil_nodes[i]->centered_loc,prow);CHKERRQ(ierr);
+    ierr = PetscSpaceEvaluate(stencil_nodes[i]->polyspace,1,stencil_nodes[i]->centered_loc,prow,NULL,NULL);CHKERRQ(ierr);
     for(j=0; j<nc; ++j){
-      pvu[i][j] = prow[j];
-      pvl[j][i] = prow[j];
+      pvu[i][j] = PetscIsNanReal(prow[j]) ? 0.0 : prow[j];
+      pvl[j][i] = pvu[i][j];
     }
   }
 
@@ -450,7 +447,7 @@ static PetscErrorCode rbf_interp_get_weight_problem(RBFProblem  prob,
     pcol[i] = stencil_size+i;
   }
   /* insert upper-right block */
-  ierr = MatSetValues(*AP,stencil_size,arowcol,nc,pcol,pvu,INSERT_VALUES);CHKERRQ(ierr);
+  ierr = MatSetValues(*AP,stencil_size,arowcol,nc,pcol,&pvu[0][0],INSERT_VALUES);CHKERRQ(ierr);
   for(i=0; i<stencil_size; ++i){
     arowcol[i] = i;
   }
@@ -458,7 +455,7 @@ static PetscErrorCode rbf_interp_get_weight_problem(RBFProblem  prob,
     pcol[i] = stencil_size+i;
   }
   /* insert lower-left block and assemble*/
-  ierr = MatSetValues(*AP,nc,pcol,stencil_size,arowcol,pvl,INSERT_VALUES);CHKERRQ(ierr);
+  ierr = MatSetValues(*AP,nc,pcol,stencil_size,arowcol,&pvl[0][0],INSERT_VALUES);CHKERRQ(ierr);
   ierr = MatAssemblyBegin(*AP, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
   ierr = MatAssemblyEnd(*AP, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
 

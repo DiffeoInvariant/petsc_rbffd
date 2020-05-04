@@ -42,98 +42,6 @@ struct _phs_ctx {
 
 typedef struct _phs_ctx *phsctx;
 
-static long small_factorial(PetscInt N)
-{
-  long i, nf = 1;
-  for(i=1; i<=N; ++i){
-    nf *= i;
-  }
-  return nf;
-}
-
-static long long range_factorial(int start, int end)
-{
-  int i;
-  long long rf=1;
-  for(i=start; i<=end; ++i){
-    rf *= i;
-  }
-  return rf;
-}
-
-static long long monomial_basis_cardinality(PetscInt dims, PetscInt order)
-{
-  PetscInt d = dims*order;
-  long long topfact = range_factorial(dims, d+dims-1);
-  long long bfact = (long long)small_factorial(d);
-  if(topfact % bfact == 0){
-    return topfact/bfact;
-  } else {
-    return topfact/bfact + 1;
-  }
-}
-/*
-static PetscErrorCode monomial_basis_fill_term(PetscInt *basis, PetscInt terms,
-					       PetscInt dims, PetscInt order)
-{
-  PetscInt i, j;
-  if(order > 8){
-    SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_RANGE, "cannot create monomial basis with order %d! Maximum order is 8.");
-  }
-  switch(order){
-  case 0:*/
-  /* constant term *//*
-    for(i=0; i<dims; ++i){
-      basis[i] = 0;
-    }
-    break;
-    case 1:*/
-  /* linear terms *//*
-    for(i=0; i<dims; ++i){
-      for(j=0; j<dims; ++j){
-	if(i == j){
-	  basis[dims * (i+1) + j] = 1;
-	} else {
-	  basis[dims * (i+1) + j] = 0;
-	}
-      }
-    }
-    break;
-  case 2:*/
-    /* quadratic terms: xx, xy (x2),xz (x2),
-                        0, yy, yz(x2),
-			0, 0, zz
-       ... (dims*(dims+1) elements)
-       1,2,
-       0,1, 
-    */
-       
-    
-/*
-static PetscErrorCode MonomialCreate(Monomial *mono, PetscInt dims, PetscInt order)
-{
-  PetscErrorCode ierr;
-  long long      terms;
-  PetscInt       i;
-  PetscFunctionBeginUser;
-  ierr = PetscNew(mono);CHKERRQ(ierr);
-  (*mono)->dims = dims;
-  (*mono)->order = order;*/
- 
-  /*
-  terms = monomial_basis_cardinality(dims, order);
-  if(terms < INT_MIN || terms > INT_MAX){
-     SETERRQ2(PETSC_COMM_WORLD, 1, "Error, MonomialCreate with dims=%d and order=%d has too large basis cardinality, try again with smaller dimensions and/or order.\n", dims, order);
-  }
-  (*mono)->terms = terms;
-  ierr = PetscCalloc2(terms*dim, &((*mono)->basis), terms, &((*mono)->coeffs));CHKERRQ(ierr);
-  for(i=0; i<terms; ++i){
-    (*mono)->coeffs[i] = 1.0;
-    }*/
-  /*
-  PetscFunctionReturn(0);
-  }*/
-
 
 PetscErrorCode RBFNodeCreate(RBFNode *node, PetscInt dims)
 {
@@ -148,7 +56,7 @@ PetscErrorCode RBFNodeCreate(RBFNode *node, PetscInt dims)
   ierr = PetscSpaceCreate(PETSC_COMM_WORLD, &((*node)->polyspace));CHKERRQ(ierr);
   ierr = PetscSpaceSetNumVariables((*node)->polyspace, dims);CHKERRQ(ierr);
   ierr = PetscSpaceSetType((*node)->polyspace, PETSCSPACEPOLYNOMIAL);CHKERRQ(ierr);
-  ierr = 
+  ierr = PetscSpaceSetUp((*node)->polyspace);CHKERRQ(ierr);
   (*node)->is_parametric = PETSC_FALSE;
   (*node)->allocated_ctx = PETSC_FALSE;
   PetscFunctionReturn(0);
@@ -454,25 +362,106 @@ PetscErrorCode RBFNodeViewPolynomialBasis(const RBFNode node)
 }
 
 
-#if 0
-static PetscErrorCode
-rbf_problem_get_node_weights(RBFProblem prob,
-			     PetscInt   stencil_size,
-			     RBFNode    *stencil_nodes,
-			     const PetscScalar *target_point,
-			     PetscInt derivative_order,
-			     PetscInt polynomial_order,
-			     PetscScalar *fdweights)
+
+/*static PetscErrorCode
+rbf_interp_get_node_weights(RBFProblem  prob,
+			    PetscInt    stencil_size,
+			    RBFNode     *stencil_nodes,
+			    PetscScalar coeff,
+			    const PetscScalar *target_point,
+			    PetscScalar *fdweights)*/
+
+static PetscErrorCode rbf_interp_get_weight_problem(RBFProblem  prob,
+						    PetscInt    stencil_size,
+						    RBFNode     *stencil_nodes,
+						    PetscScalar coeff,
+						    const PetscScalar *target_point,
+						    Mat *AP,
+						    Vec *L)
 {
   PetscErrorCode ierr;
-  PetscInt       i, j;
- 
-  /* center stencil points */
+  PetscInt       i, j, k, nc;
+  PetscReal      r2, dr, phi;
+  ierr = PetscSpaceGetDimension(stencil_nodes[0]->polyspace,&nc);CHKERRQ(ierr);
+  PetscScalar    *ll,lpl[nc], av[stencil_size][stencil_size], pvu[stencil_size][nc],pvl[nc][stencil_size], prow[nc];
+  PetscInt       arowcol[stencil_size],pcol[nc];
+
+  
+  /* create right-hand-side Vec */
+  ierr = VecCreateSeq(PETSC_COMM_SELF,L);CHKERRQ(ierr);
+  ierr = VecSetSizes(*L,PETSC_DECIDE,stencil_size+nc);CHKERRQ(ierr);
+  ierr = VecSet(*L,0.0);CHKERRQ(ierr);
+  ierr = VecSetUp(*L);CHKERRQ(ierr);
+
+  ierr = VecGetArray(*L, &ll);CHKERRQ(ierr);
   for(i=0; i<stencil_size; ++i){
-    for(j=0; j<prob->dims; ++j){
-      stencil_nodes[i]->centered_loc[j] = stencil_nodes[i]->loc[j] - target_point[j];
+    r2 = 0.0
+    for(j=0; j<prob->dim; ++j){
+      /* get locally-centered node locations and distance to this node*/
+      dr = stencil_nodes[i]->centered_loc[j] = stencil_nodes[i]->loc[j] - target_point[j];
+      r2 += _sqr(dr);
+    }
+    ierr = RBFNodeEvaluateRBFAtDistance(stencil_nodes[i],PetscSqrtReal(r2),&phi);CHKERRQ(ierr);
+    ll[i] = coeff*phi;
+  }
+  /* since polynomial spaces are not locally-centered, it doesn't matter which node's polyspace we 
+     evaluate here, they all give the exact same values at the same point in the domain */
+  ierr = PetscSpaceEvaluate(stencil_nodes[0]->polyspace,1,target_point,lpl);CHKERRQ(ierr);
+  for(i=stencil_size; i<stencil_size+nc; ++i){
+    ll[i] = coeff*lpl[i-stencil_size];
+  }
+  
+  ierr = VecRestoreArray(*L,&ll);CHKERRQ(ierr);
+
+  /* create Mats for left-hand side */
+  ierr = MatCreateSeqDense(PETSC_COMM_SELF,stencil_size+nc,stencil_size+nc,NULL,AP);CHKERRQ(ierr);
+  ierr = MatSetOption(*AP,MAT_SYMMETRIC,PETSC_TRUE);CHKERRQ(ierr);
+  ierr = MatSetUp(*AP);CHKERRQ(ierr);
+
+  /* RBF A matrix */
+  for(i=0; i<stencil_size; ++i){
+    arowcol[i] = i;
+    for(j=0; j<stencil_size; ++j){
+      r2=0.0;
+      for(k=0; k<prob->dims; ++k){
+	dr = stencil_nodes[i]->centered_loc[k] - stencil_nodes[j]->centered_loc[k];
+	r2 += _sqr(dr);
+      }
+      ierr = RBFNodeEvaluateRBFAtDistance(stencil_nodes[i],PetscSqrtReal(r2),&av[i][j]);CHKERRQ(ierr);
+    }
+  }
+  ierr = MatSetValues(*AP,stencil_size,arowcol,stencil_size,arowcol,av,INSERT_VALUES);CHKERRQ(ierr);
+  /*ierr = MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);*.
+
+  ierr = MatCreateSeqDense(PETSC_COMM_SELF,stencil_size,nc,NULL,&P);CHKERRQ(ierr);
+  ierr = MatSetUp(P);CHKERRQ(ierr);
+
+  /* polynomial component */
+  for(i=0; i<stencil_size; ++i){
+    ierr = PetscSpaceEvaluate(stencil_nodes[i],1,stencil_nodes[i]->centered_loc,prow);CHKERRQ(ierr);
+    for(j=0; j<nc; ++j){
+      pvu[i][j] = prow[j];
+      pvl[j][i] = prow[j];
     }
   }
 
+  for(i=0; i<nc; ++i){
+    pcol[i] = stencil_size+i;
+  }
+  /* insert upper-right block */
+  ierr = MatSetValues(*AP,stencil_size,arowcol,nc,pcol,pvu,INSERT_VALUES);CHKERRQ(ierr);
+  for(i=0; i<stencil_size; ++i){
+    arowcol[i] = i;
+  }
+  for(i=0; i<nc; ++i){
+    pcol[i] = stencil_size+i;
+  }
+  /* insert lower-left block and assemble*/
+  ierr = MatSetValues(*AP,nc,pcol,stencil_size,arowcol,pvl,INSERT_VALUES);CHKERRQ(ierr);
+  ierr = MatAssemblyBegin(*AP, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+  ierr = MatAssemblyEnd(*AP, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
+
+  PetscFunctionReturn(0);
 }
-#endif
+

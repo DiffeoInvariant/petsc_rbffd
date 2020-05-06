@@ -48,11 +48,14 @@ extern "C" {
 
   PetscErrorCode KDTreeClear(KDTree tree);
 
+  /* applies a unary function to each node */
+  PetscErrorCode KDTreeApply(KDTree tree, void(*unaryfunc)(void*));
+
   PetscErrorCode KDTreeInsert(KDTree tree, const PetscScalar *loc, void *node_data);
   
   PetscErrorCode KDTreeInsert3D(KDTree tree, PetscScalar x, PetscScalar y, PetscScalar z, void *node_data);
 
-  typedef PetscErrorCode (*NodeDestructor)(void *);
+  typedef PetscErrorCode (*NodeDestructor)(void **);
 
   PetscErrorCode KDTreeSetNodeDestructor(KDTree tree, NodeDestructor dtor);
 

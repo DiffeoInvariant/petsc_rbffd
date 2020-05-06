@@ -26,9 +26,9 @@ extern "C" {
   } RBFProblemType;
   
   /* dims is number of spatial dimensions */
-  extern PetscErrorCode RBFNodeCreate(RBFNode *node, PetscInt dims);
+  extern PetscErrorCode RBFNodeCreate(MPI_Comm comm, PetscInt dims, RBFNode *rbfnode);
   
-  extern PetscErrorCode RBFNodeDestroy(RBFNode node);
+  extern PetscErrorCode RBFNodeDestroy(RBFNode *node);
   
   extern PetscErrorCode RBFNodeSetLocation(RBFNode node, const PetscScalar *location);
 
@@ -39,6 +39,8 @@ extern "C" {
   /* use this for GA, MQ, QU, PHS, and IQ, or if you have a custom RBF
    that takes only one real-valued parameter (other than r)*/
   extern PetscErrorCode RBFNodeSetEpsilon(RBFNode node, PetscReal eps);
+
+  extern PetscErrorCode RBFNodeView(const RBFNode node);
 
   extern PetscErrorCode RBFNodeSetPolyOrder(RBFNode node, PetscInt poly_order);
 
@@ -55,13 +57,13 @@ extern "C" {
   /* while EvaluateRBFAtDistance only evaluates the RBF, this evaluates the polynomial too */
   extern PetscErrorCode RBFNodeEvaluateAtPoint(const RBFNode node, PetscScalar *point, PetscReal *phi);
 
-  extern PetscErrorCode RBFProblemCreate(RBFProblem *prob, PetscInt ndim);
+  extern PetscErrorCode RBFProblemCreate(MPI_Comm comm, PetscInt ndim, RBFProblem *rbfprob);
 
-  extern PetscErrorCode RBFProblemDestroy(RBFProblem prob);
+  extern PetscErrorCode RBFProblemDestroy(RBFProblem *prob);
 
   extern PetscErrorCode RBFProblemSetType(RBFProblem prob, RBFProblemType type);
 
-  extern PetscErrorCode RBFProblemSetNodeType(RBFProblem prob, RBFType type);
+  extern PetscErrorCode RBFProblemSetNodeType(RBFProblem prob, RBFType type, void *ctx);
 
   extern PetscErrorCode RBFProblemSetPolynomialDegree(RBFProblem prob, PetscInt degree);
 
@@ -71,8 +73,9 @@ extern "C" {
   extern PetscErrorCode RBFProblemGetTree(RBFProblem prob, KDTree *tree);
 
   extern PetscErrorCode RBFProblemGetWeights(RBFProblem prob);
-  
 
+  extern PetscErrorCode RBFProblemView(RBFProblem prob);
+  
 
 #ifdef __cplusplus
 }

@@ -5,24 +5,33 @@
 #include <petscsnes.h>
 #include <limits.h>
 #include <petscfe.h>
+#include <petsc/private/petscimpl.h>
 
-typedef PetscReal(*UniRBF)(PetscReal);
+typedef PetscReal(*UniRBF)(PetscReal, PetscReal);
 
-struct _p_rbf_node {
-  PetscInt       dim, poly_order;
-  PetscScalar    *loc, *centered_loc;
-
-  RBFType        type;
-  PetscSpace     polyspace;
-  PetscBool      is_parametric;
+struct _p_rbf_node_ops {
   UniRBF         uni_rbf;
   ParametricRBF  para_rbf;
-
+  PetscBool      is_parametric;
   PetscBool      allocated_ctx;
+  PetscReal      eps;/* use para_ctx instead of eps if you
+			need more than one parameter */
   void           *para_ctx;
+  PetscSpace     polyspace;
+};
+
+typedef struct _p_rbf_node_ops *RBFNodeOps;
+
+
+struct _p_rbf_node {
+  PETSCHEADER(struct _p_rbf_node_ops);
+  PetscInt       dims, poly_order;
+  PetscScalar    *loc, *centered_loc;
+  RBFType        type;
 };
 
 struct _p_rbf_problem {
+  PETSCHEADER(int);
   PetscInt       dims, global_poly_order;
   KDTree         tree;
   Vec            *node_points;
@@ -43,36 +52,80 @@ struct _phs_ctx {
 typedef struct _phs_ctx *phsctx;
 
 
-PetscErrorCode RBFNodeCreate(RBFNode *node, PetscInt dims)
+static PetscErrorCode rbf_node_check_args(PetscInt dims)
 {
-  PetscErrorCode ierr;
-  PetscFunctionBeginUser;
-  ierr = PetscNew(node);CHKERRQ(ierr);
   if(dims < 1){
     SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "dims must be > 0, not %d.\n", dims);
   }
-  (*node)->dim = dims;
-  ierr = PetscCalloc2(dims, &((*node)->loc), dims, &((*node)->centered_loc));CHKERRQ(ierr);
-  ierr = PetscSpaceCreate(PETSC_COMM_WORLD, &((*node)->polyspace));CHKERRQ(ierr);
-  ierr = PetscSpaceSetNumVariables((*node)->polyspace, dims);CHKERRQ(ierr);
-  ierr = PetscSpaceSetType((*node)->polyspace, PETSCSPACEPOLYNOMIAL);CHKERRQ(ierr);
-  ierr = PetscSpaceSetUp((*node)->polyspace);CHKERRQ(ierr);
-  (*node)->is_parametric = PETSC_FALSE;
-  (*node)->allocated_ctx = PETSC_FALSE;
+  return 0;
+}
+
+static PetscClassId RBF_NODE_CLASSID, RBF_PROBLEM_CLASSID;
+
+static PetscErrorCode RBFNodeOpsSetSpace(RBFNode node, PetscInt dim)
+{
+  PetscErrorCode ierr;
+  ierr = PetscSpaceCreate(node->hdr.comm, &node->ops->polyspace);CHKERRQ(ierr);
+  ierr = PetscSpaceSetNumVariables(node->ops->polyspace, dim);CHKERRQ(ierr);
+  ierr = PetscSpaceSetType(node->ops->polyspace, PETSCSPACEPOLYNOMIAL);CHKERRQ(ierr);
+  /*ierr = PetscSpaceSetNumComponents((*node)->polyspace, dims);CHKERRQ(ierr);*/
+  ierr = PetscSpaceSetUp(node->ops->polyspace);CHKERRQ(ierr);
+  return 0;
+}
+
+static const char *const RBF_type_names[] = {"GA","MQ","IMQ","IQ","PHS","CUSTOM","RBF_",0};
+
+PetscErrorCode RBFNodeCreate(MPI_Comm comm, PetscInt dims, RBFNode *rbfnode)
+{
+  PetscErrorCode   ierr;
+  static PetscBool registered_type = PETSC_FALSE;
+  RBFType          type=RBF_GA;
+  PetscReal        eps=1.0e-8;
+  PetscInt         poly_order=1;
+  RBFNode          node;
+  PetscFunctionBeginUser;
+  if(!registered_type){
+    PetscClassIdRegister("Radial Basis Function Node",&RBF_NODE_CLASSID);
+    registered_type = PETSC_TRUE;
+  }
+  ierr = rbf_node_check_args(dims);CHKERRQ(ierr);
+  PetscHeaderCreate(node,RBF_NODE_CLASSID,"RBFNode","Radial Basis Function Node","",comm,RBFNodeDestroy,RBFNodeView);
+  
+  node->dims = dims;
+  PetscOptionsBegin(comm,NULL,"RBF Node options","");
+  {
+    PetscOptionsEnum("-rbf_type","Type of pre-set RBF to use","",RBF_type_names,(PetscEnum)type, (PetscEnum*)&type,NULL);
+    node->type = type;
+    
+    PetscOptionsReal("-eps","Value of epsilon (for pre-set RBF types that have an epsilon, such as RBF_GA)","",eps,&eps,NULL);
+    node->ops->eps = eps;
+
+    PetscOptionsInt("-poly_order","Order of the pseudospectral polynomials","",poly_order,&poly_order,NULL);
+    node->poly_order = poly_order;
+  }
+  PetscOptionsEnd();
+      
+  ierr = PetscCalloc2(dims, &node->loc, dims, &node->centered_loc);CHKERRQ(ierr);
+  ierr = RBFNodeOpsSetSpace(node, dims);
+  
+  *rbfnode = node;
   PetscFunctionReturn(0);
 }
 
-PetscErrorCode RBFNodeDestroy(RBFNode node)
+PetscErrorCode RBFNodeDestroy(RBFNode *node)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  ierr = PetscSpaceDestroy(&(node->polyspace));CHKERRQ(ierr);
-  ierr = PetscFree(node->loc);CHKERRQ(ierr);
-  ierr = PetscFree(node->centered_loc);CHKERRQ(ierr);
-  if(node->allocated_ctx){
-    ierr = PetscFree(node->para_ctx);CHKERRQ(ierr);
+  if(!*node) PetscFunctionReturn(0);
+  if(--((PetscObject)(*node))->refct > 0) { *node=NULL; PetscFunctionReturn(0);}
+  
+  ierr = PetscSpaceDestroy(&((*node)->ops->polyspace));CHKERRQ(ierr);
+  ierr = PetscFree((*node)->loc);CHKERRQ(ierr);
+  ierr = PetscFree((*node)->centered_loc);CHKERRQ(ierr);
+  if((*node)->ops->allocated_ctx){
+    ierr = PetscFree((*node)->ops->para_ctx);CHKERRQ(ierr);
   }
-  ierr = PetscFree(node);CHKERRQ(ierr);
+  ierr = PetscHeaderDestroy(node);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -87,8 +140,8 @@ PetscErrorCode RBFNodeSetPolyOrder(RBFNode node, PetscInt poly_order)
     SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "You must pass a positive or zero polynomial order to RBFNodeSetPolyOrder, not %d!\n",poly_order);
   }
   node->poly_order = poly_order;
-  ierr = PetscSpaceSetDegree(node->polyspace, poly_order, PETSC_DETERMINE);CHKERRQ(ierr);
-  ierr = PetscSpaceSetUp(node->polyspace);CHKERRQ(ierr);
+  ierr = PetscSpaceSetDegree(node->ops->polyspace, poly_order, PETSC_DETERMINE);CHKERRQ(ierr);
+  ierr = PetscSpaceSetUp(node->ops->polyspace);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -97,7 +150,7 @@ PetscErrorCode RBFNodeSetLocation(RBFNode node, const PetscScalar *location)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  ierr = PetscArraycpy(node->loc, location, node->dim);CHKERRQ(ierr);
+  ierr = PetscArraycpy(node->loc, location, node->dims);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -105,33 +158,29 @@ PetscErrorCode RBFNodeGetLocation(const RBFNode node, PetscScalar *location)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  ierr = PetscArraycpy(location, node->loc, node->dim);CHKERRQ(ierr);
+  ierr = PetscArraycpy(location, node->loc, node->dims);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
 #define _sqr(r) (r) * (r)
-static PetscReal gaussian_rbf(PetscReal r, void *ctx)
+static PetscReal gaussian_rbf(PetscReal r, PetscReal eps)
 {
-  PetscReal *eps = (PetscReal*)ctx;
-  return PetscExpReal(-(_sqr((*eps) * r)));
+  return PetscExpReal(-(_sqr(eps * r)));
 }
 
-static PetscReal multiquadric_rbf(PetscReal r, void *ctx)
+static PetscReal multiquadric_rbf(PetscReal r, PetscReal eps)
 {
-  PetscReal *eps = (PetscReal*)ctx;
-  return PetscSqrtReal(1.0 + _sqr((*eps) * r));
+  return PetscSqrtReal(1.0 + _sqr(eps * r));
 }
 
-static PetscReal inverse_multiquadric_rbf(PetscReal r, void *ctx)
+static PetscReal inverse_multiquadric_rbf(PetscReal r, PetscReal eps)
 {
-  PetscReal *eps = (PetscReal*)ctx;
-  return 1.0/PetscSqrtReal(1.0 + _sqr((*eps) * r));
+  return 1.0/PetscSqrtReal(1.0 + _sqr(eps * r));
 }
 
-static PetscReal inverse_quadratic_rbf(PetscReal r, void *ctx)
+static PetscReal inverse_quadratic_rbf(PetscReal r, PetscReal eps)
 {
-  PetscReal *eps = (PetscReal*)ctx;
-  return 1.0/(1.0+_sqr((*eps)*r));
+  return 1.0/(1.0+_sqr(eps*r));
 }
 
 static PetscReal phs_rbf(PetscReal r, void *ctx)
@@ -151,10 +200,9 @@ static PetscReal phs_rbf(PetscReal r, void *ctx)
   }
 }
 
-static ParametricRBF _preset_rbfs[] = {gaussian_rbf, multiquadric_rbf,
-				       inverse_multiquadric_rbf,
-				       inverse_quadratic_rbf,
-				       phs_rbf};
+static const UniRBF _preset_uni_rbfs[] = {gaussian_rbf, multiquadric_rbf,
+					  inverse_multiquadric_rbf,
+					  inverse_quadratic_rbf};
 
 PetscErrorCode RBFNodeSetType(RBFNode node, RBFType type, void *ctx)
 {
@@ -162,28 +210,35 @@ PetscErrorCode RBFNodeSetType(RBFNode node, RBFType type, void *ctx)
   node->type = type;
   if(type == RBF_CUSTOM){
     if(ctx){
-      node->is_parametric = PETSC_TRUE;
-      node->para_ctx = ctx;
+      node->ops->is_parametric = PETSC_TRUE;
+      node->ops->para_ctx = ctx;
     }
   } else {
-    node->is_parametric = PETSC_TRUE;
-    node->para_rbf = _preset_rbfs[type];
-    if(ctx){
-      node->para_ctx = ctx;
+    if(type == RBF_PHS){
+      node->ops->is_parametric = PETSC_TRUE;
+      node->ops->para_rbf = phs_rbf;
+      if(ctx){
+	node->ops->para_ctx = ctx;
+      }
+    } else {
+      node->ops->is_parametric = PETSC_FALSE;
+      node->ops->uni_rbf = _preset_uni_rbfs[type];
+      if(ctx){
+	node->ops->eps = *((PetscReal*)ctx);
+      }
     }
   }
+  
   PetscFunctionReturn(0);
 }
 
 PetscErrorCode RBFNodeSetEpsilon(RBFNode node, PetscReal eps)
 {
-  PetscErrorCode ierr;
-  PetscReal      *epsilon;
   PetscFunctionBeginUser;
-  ierr = PetscCalloc1(1, &epsilon);CHKERRQ(ierr);
-  *epsilon = eps;
-  node->allocated_ctx = PETSC_TRUE;
-  node->para_ctx = epsilon;
+  if(eps <= 0.0){
+    SETERRQ1(node->hdr.comm,PETSC_ERR_ARG_OUTOFRANGE,"Epsilon must be > 0, not %f!",eps);
+  }
+  node->ops->eps = eps;
   PetscFunctionReturn(0);
 }
   
@@ -198,13 +253,13 @@ PetscErrorCode RBFNodeSetPHS(RBFNode node, PetscInt ord, PetscReal eps)
     SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "PHS RBF order must be >= 1, not %d.\n", ord);
   }
   node->type = RBF_PHS;
-  node->is_parametric = PETSC_TRUE;
-  node->para_rbf = phs_rbf;
+  node->ops->is_parametric = PETSC_TRUE;
+  node->ops->para_rbf = phs_rbf;
   ierr = PetscNew(&ctx);CHKERRQ(ierr);
   ctx->ord = ord;
   ctx->eps = eps;
-  node->para_ctx = ctx;
-  node->allocated_ctx = PETSC_TRUE;
+  node->ops->para_ctx = ctx;
+  node->ops->allocated_ctx = PETSC_TRUE;
   PetscFunctionReturn(0);
 }
   
@@ -212,9 +267,9 @@ PetscErrorCode RBFNodeSetParametricRBF(RBFNode node, ParametricRBF rbf, void *ct
 {
   PetscFunctionBeginUser;
   node->type = RBF_CUSTOM;
-  node->is_parametric = PETSC_TRUE;
-  node->para_rbf = rbf;
-  node->para_ctx = ctx;
+  node->ops->is_parametric = PETSC_TRUE;
+  node->ops->para_rbf = rbf;
+  node->ops->para_ctx = ctx;
   PetscFunctionReturn(0);
 }
 
@@ -222,10 +277,10 @@ PetscErrorCode RBFNodeSetParametricRBF(RBFNode node, ParametricRBF rbf, void *ct
 PetscErrorCode RBFNodeEvaluateRBFAtDistance(const RBFNode node, PetscReal r, PetscReal *phi)
 {
   PetscFunctionBeginUser;
-  if(PetscLikely(node->is_parametric)){
-    *phi = node->para_rbf(r, node->para_ctx);
+  if(PetscUnlikely(node->ops->is_parametric)){
+    *phi = node->ops->para_rbf(r, node->ops->para_ctx);
   } else {
-    *phi = node->uni_rbf(r);
+    *phi = node->ops->uni_rbf(r, node->ops->eps);
   }
   PetscFunctionReturn(0);
 }
@@ -240,44 +295,110 @@ PetscErrorCode RBFNodeEvaluateAtPoint(const RBFNode node, PetscScalar *point, Pe
   if(!node){
     SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_ARG_NULL, "You must pass a non-NULL node (first argument) to RBFNodeEvaluateAtPoint!\n");
   }
-  for(i=0; i<node->dim; ++i){
+  for(i=0; i<node->dims; ++i){
     dist += _sqr(point[i] - node->loc[i]);
   }
   /* get RBF part */
   ierr = RBFNodeEvaluateRBFAtDistance(node, PetscSqrtReal(dist), phi);CHKERRQ(ierr);
   /* get poly part */
-  ierr = PetscSpaceGetDimension(node->polyspace, &N);CHKERRQ(ierr);
+  ierr = PetscSpaceGetDimension(node->ops->polyspace, &N);CHKERRQ(ierr);
   ierr = PetscCalloc1(N, &vals);CHKERRQ(ierr);
   
-  ierr = PetscSpaceEvaluate(node->polyspace, 1, point, vals, NULL, NULL);CHKERRQ(ierr);
+  ierr = PetscSpaceEvaluate(node->ops->polyspace, 1, point, vals, NULL, NULL);CHKERRQ(ierr);
   for(i=0; i<N; ++i){
     *phi += vals[i];
   }
   PetscFunctionReturn(0);
 }
 
-
-PetscErrorCode RBFProblemCreate(RBFProblem *prob, PetscInt ndim)
+PetscErrorCode RBFNodeViewPolynomialBasis(const RBFNode node)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  ierr = PetscNew(prob);CHKERRQ(ierr);
-  (*prob)->dims = ndim;
-  (*prob)->global_poly_order=0;
-  ierr = KDTreeCreate(&((*prob)->tree), ndim);CHKERRQ(ierr);
-  ierr = KDTreeSetNodeDestructor((*prob)->tree, (NodeDestructor)RBFNodeDestroy);CHKERRQ(ierr);
+  ierr = PetscSpaceView(node->ops->polyspace, PETSC_VIEWER_STDOUT_WORLD);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
-PetscErrorCode RBFProblemDestroy(RBFProblem prob)
+
+
+PetscErrorCode RBFNodeView(const RBFNode node)
+{
+  PetscInt i;
+  PetscFunctionBeginUser;
+  PetscPrintf(node->hdr.comm,"RBFNode in %d spatial dimensions with RBF type %s, polynomial order %d, at location\n",node->dims,RBF_type_names[node->type],node->poly_order);
+  PetscPrintf(node->hdr.comm,"[");
+  for(i=0; i<node->dims-1; ++i){
+    PetscPrintf(node->hdr.comm,"%5.4e,",node->loc[i]);
+  }
+  PetscPrintf(node->hdr.comm,"%5.4e].\n",node->loc[node->dims-1]);
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode RBFNodeTreeDtor(void **node)
+{
+  PetscErrorCode ierr;
+  RBFNode *rnode = (RBFNode*)node;
+  ierr = RBFNodeDestroy(rnode);CHKERRQ(ierr);
+  return 0;
+}
+
+static const char *const RBF_problem_types[] = {"INTERPOLATE","PDE_SOLVE","PDE_STEP","RBF_",0};
+
+PetscErrorCode RBFProblemCreate(MPI_Comm comm, PetscInt dims, RBFProblem *rbfprob)
+{
+  PetscErrorCode   ierr;
+  static PetscBool registered_type = PETSC_FALSE;
+  RBFProblem       prob;
+  RBFProblemType   ptype=RBF_INTERPOLATE;
+  RBFType          ntype=RBF_GA;
+  /*PetscReal        eps=1.0e-8;*/
+  PetscInt         poly_order=1;
+  PetscFunctionBeginUser;
+  if(!registered_type){
+    PetscClassIdRegister("Radial Basis Function problem manager and solver",&RBF_PROBLEM_CLASSID);
+    registered_type = PETSC_TRUE;
+  }
+  if(dims < 1){
+    SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "dims must be > 0, not %d.\n", dims);
+  }
+  
+  PetscHeaderCreate(prob,RBF_PROBLEM_CLASSID,"RBFProblem","Radial Basis Function Problem Solver","",comm,RBFProblemDestroy,RBFProblemView);
+  
+  prob->dims = dims;
+  prob->global_poly_order=poly_order;
+
+  PetscOptionsBegin(comm,NULL,"RBF Problem options","");
+  {
+    PetscOptionsEnum("-rbf_type","Type of pre-set RBF to use","",RBF_type_names,(PetscEnum)ntype, (PetscEnum*)&ntype,NULL);
+    prob->node_type = ntype;
+
+    PetscOptionsEnum("-rbf_problem","What problem to solve? (Options are interpolation, steady-state PDE solving, and PDE timestepping)","",RBF_problem_types,(PetscEnum)ptype, (PetscEnum*)&ptype,NULL);
+    prob->problem_type = ptype;
+
+    PetscOptionsInt("-poly_order","Order of the pseudospectral polynomials","",poly_order,&poly_order,NULL);
+    prob->global_poly_order = poly_order;
+  }
+  PetscOptionsEnd();
+
+  ierr = KDTreeCreate(&prob->tree, dims);CHKERRQ(ierr);
+  ierr = KDTreeSetNodeDestructor(prob->tree, (NodeDestructor)RBFNodeTreeDtor);CHKERRQ(ierr);
+
+  *rbfprob = prob;
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode RBFProblemDestroy(RBFProblem *prob)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  ierr = KDTreeDestroy(prob->tree);CHKERRQ(ierr);
-  if(prob->ts){
-    ierr = TSDestroy(&prob->ts);
-  }
-  ierr = PetscFree(prob);CHKERRQ(ierr);
+  if(!*prob) PetscFunctionReturn(0);
+  if(--((PetscObject)(*prob))->refct > 0) { *prob=NULL; PetscFunctionReturn(0);}
+  /* NOTE: KDTreeDestroy calls RBFNodeDestroy on all of the allocated nodes */
+  ierr = KDTreeDestroy((*prob)->tree);CHKERRQ(ierr);
+  ierr = TSDestroy(&((*prob)->ts));CHKERRQ(ierr);
+  ierr = KSPDestroy(&((*prob)->ksp));CHKERRQ(ierr);
+  ierr = PCDestroy(&((*prob)->pc));CHKERRQ(ierr);
+  ierr = PetscHeaderDestroy(prob);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
   
@@ -289,11 +410,23 @@ PetscErrorCode RBFProblemSetType(RBFProblem prob, RBFProblemType type)
   PetscFunctionReturn(0);
 }
 
-PetscErrorCode RBFProblemSetNodeType(RBFProblem prob, RBFType type)
+static RBFType _set_nodes_to_t;
+static void    *_set_node_ctx;
+
+static void set_node_type(void* node)
+{
+  RBFNode rnode = (RBFNode)node;
+  RBFNodeSetType(rnode,_set_nodes_to_t,_set_node_ctx);
+}
+
+PetscErrorCode RBFProblemSetNodeType(RBFProblem prob, RBFType type, void *ctx)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
   prob->node_type = type;
+  _set_nodes_to_t = type;
+  _set_node_ctx = ctx;
+  ierr = KDTreeApply(prob->tree,set_node_type);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
   
@@ -305,30 +438,28 @@ PetscErrorCode RBFProblemSetNodes(RBFProblem prob, Vec *locs, void *node_ctx)
   const PetscScalar *x;
   PetscFunctionBeginUser;
 
-  ierr = KDTreeGetK(prob->tree, &k);
+  ierr = KDTreeGetK(prob->tree,&k);
   PetscInt sz[k];
   PetscScalar loc[k];
   for(i=0; i<k; ++i){
-    ierr = VecGetLocalSize(locs[i], &sz[i]);CHKERRQ(ierr);
+    ierr = VecGetLocalSize(locs[i],&sz[i]);CHKERRQ(ierr);
     if(sz[i] != sz[0]){
       SETERRQ3(PETSC_COMM_WORLD, 1, "RBF node location vectors must have the same number of components (%d), but dimension %d has %d components!\n", sz[0], i, sz[i]);
     }
   }
-  ierr = PetscCalloc1(sz[0], &prob->nodes);CHKERRQ(ierr);
+  ierr = PetscCalloc1(sz[0],&prob->nodes);CHKERRQ(ierr);
   /* ^ confirms that sz[i] are equal for all i */
   for(j=0; j<sz[0]; ++j){
     for(i=0; i<k; ++i){
-      RBFNode node;
-      ierr = PetscNew(&node);CHKERRQ(ierr);
-      ierr = VecGetArrayRead(locs[i], &x);CHKERRQ(ierr);
+      ierr = VecGetArrayRead(locs[i],&x);CHKERRQ(ierr);
       loc[i] = x[j];
-      ierr = VecRestoreArrayRead(locs[i], &x);CHKERRQ(ierr);
+      ierr = VecRestoreArrayRead(locs[i],&x);CHKERRQ(ierr);
     }
-    ierr = RBFNodeCreate(&(prob->nodes[j]), k);CHKERRQ(ierr);
-    ierr = RBFNodeSetType(prob->nodes[j], prob->node_type, node_ctx);CHKERRQ(ierr);
-    ierr = RBFNodeSetLocation(prob->nodes[j], loc);CHKERRQ(ierr);
-    ierr = RBFNodeSetPolyOrder(prob->nodes[j], prob->global_poly_order);CHKERRQ(ierr);
-    ierr = KDTreeInsert(prob->tree, loc, prob->nodes[j]);CHKERRQ(ierr);
+    ierr = RBFNodeCreate(prob->hdr.comm,k,&(prob->nodes[j]));CHKERRQ(ierr);
+    ierr = RBFNodeSetType(prob->nodes[j],prob->node_type,node_ctx);CHKERRQ(ierr);
+    ierr = RBFNodeSetLocation(prob->nodes[j],loc);CHKERRQ(ierr);
+    ierr = RBFNodeSetPolyOrder(prob->nodes[j],prob->global_poly_order);CHKERRQ(ierr);
+    ierr = KDTreeInsert(prob->tree,loc,prob->nodes[j]);CHKERRQ(ierr);
   }
   PetscFunctionReturn(0);
 }
@@ -340,27 +471,41 @@ PetscErrorCode RBFProblemGetTree(RBFProblem prob, KDTree *tree)
   PetscFunctionReturn(0);
 }
 
-PetscErrorCode RBFProblemSetPolynomialDegree(RBFProblem prob, PetscInt degree)
+static PetscInt _set_node_order;
+
+static void set_node_degree(void* node)
 {
-  PetscFunctionBeginUser;
-  if(!prob){
-    SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_ARG_NULL, "Cannot pass NULL first argument to RBFProblemSetPolynomialDegree!\n");
-  }
-  if(degree < 0){
-    SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE, "You must pass a positive or zero polynomial degree to RBFNodeSetPolynomialDegree, not %d!\n",degree);
-  }
-  prob->global_poly_order = degree;
-  PetscFunctionReturn(0);
+  RBFNode rnode = (RBFNode)node;
+  RBFNodeSetPolyOrder(rnode,_set_node_order);
 }
 
-PetscErrorCode RBFNodeViewPolynomialBasis(const RBFNode node)
+
+PetscErrorCode RBFProblemSetPolynomialDegree(RBFProblem prob, PetscInt degree)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  ierr = PetscSpaceView(node->polyspace, PETSC_VIEWER_STDOUT_WORLD);CHKERRQ(ierr);
+  if(!prob){
+    SETERRQ(PETSC_COMM_WORLD,PETSC_ERR_ARG_NULL,"Cannot pass NULL first argument to RBFProblemSetPolynomialDegree!\n");
+  }
+  if(degree < 0){
+    SETERRQ1(PETSC_COMM_WORLD, PETSC_ERR_ARG_OUTOFRANGE,"You must pass a positive or zero polynomial degree to RBFNodeSetPolynomialDegree, not %d!\n",degree);
+  }
+  prob->global_poly_order = degree;
+  _set_node_order = degree;
+  ierr = KDTreeApply(prob->tree,set_node_degree);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
+
+PetscErrorCode RBFProblemView(const RBFProblem prob)
+{
+  PetscInt       N;
+  PetscErrorCode ierr;
+  PetscFunctionBeginUser;
+  ierr = KDTreeSize(prob->tree,&N);CHKERRQ(ierr);
+  PetscPrintf(prob->hdr.comm,"RBF Problem with task RBF_%s in %d spatial dimensions with %d nodes.\n",RBF_problem_types[prob->problem_type],prob->dims,N);
+  PetscFunctionReturn(0);
+}
 
 
 /*static PetscErrorCode
@@ -371,7 +516,7 @@ rbf_interp_get_node_weights(RBFProblem  prob,
 			    const PetscScalar *target_point,
 			    PetscScalar *fdweights)*/
 
-static PetscErrorCode rbf_interp_get_weight_problem(RBFProblem  prob,
+PetscErrorCode rbf_interp_get_weight_problem(RBFProblem  prob,
 						    PetscInt    stencil_size,
 						    RBFNode     *stencil_nodes,
 						    PetscScalar coeff,
@@ -382,7 +527,7 @@ static PetscErrorCode rbf_interp_get_weight_problem(RBFProblem  prob,
   PetscErrorCode ierr;
   PetscInt       i, j, k, nc;
   PetscReal      r2, dr, phi;
-  ierr = PetscSpaceGetDimension(stencil_nodes[0]->polyspace,&nc);CHKERRQ(ierr);
+  ierr = PetscSpaceGetDimension(stencil_nodes[0]->ops->polyspace,&nc);CHKERRQ(ierr);
   PetscScalar    *ll,lpl[nc], av[stencil_size][stencil_size], pvu[stencil_size][nc],pvl[nc][stencil_size], prow[nc];
   PetscInt       arowcol[stencil_size],pcol[nc];
 
@@ -407,7 +552,7 @@ static PetscErrorCode rbf_interp_get_weight_problem(RBFProblem  prob,
   }
   /* since polynomial spaces are not locally-centered, it doesn't matter which node's polyspace we 
      evaluate here, they all give the exact same values at the same point in the domain */
-  ierr = PetscSpaceEvaluate(stencil_nodes[0]->polyspace,1,target_point,lpl,NULL,NULL);CHKERRQ(ierr);
+  ierr = PetscSpaceEvaluate(stencil_nodes[0]->ops->polyspace,1,target_point,lpl,NULL,NULL);CHKERRQ(ierr);
   for(i=stencil_size; i<stencil_size+nc; ++i){
     ll[i] = PetscIsNanReal(lpl[i-stencil_size]) ? 0.0 : coeff*lpl[i-stencil_size];
     /*PetscPrintf(PETSC_COMM_WORLD, "ll[%d]=%4.e3.\n", i,ll[i]);*/
@@ -436,7 +581,7 @@ static PetscErrorCode rbf_interp_get_weight_problem(RBFProblem  prob,
 
   /* polynomial component */
   for(i=0; i<stencil_size; ++i){
-    ierr = PetscSpaceEvaluate(stencil_nodes[i]->polyspace,1,stencil_nodes[i]->centered_loc,prow,NULL,NULL);CHKERRQ(ierr);
+    ierr = PetscSpaceEvaluate(stencil_nodes[i]->ops->polyspace,1,stencil_nodes[i]->centered_loc,prow,NULL,NULL);CHKERRQ(ierr);
     for(j=0; j<nc; ++j){
       pvu[i][j] = PetscIsNanReal(prow[j]) ? 0.0 : prow[j];
       pvl[j][i] = pvu[i][j];

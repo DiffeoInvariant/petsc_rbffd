@@ -88,12 +88,29 @@ static void clear_box(struct kdnode *node, NodeDestructor dtor)
   clear_box(node->left, dtor);
   clear_box(node->right, dtor);
 
-  if(dtor) dtor(node->data);
+  if(dtor) dtor(&node->data);
 
   PetscFree(node->loc);
   PetscFree(node);
 }
+
+static void tree_apply_ufunc(struct kdnode *root, void(*unaryfunc)(void*))
+{
+  if(!root) return;
   
+  unaryfunc(root->data);
+  tree_apply_ufunc(root->left,unaryfunc);
+  tree_apply_ufunc(root->right,unaryfunc);
+}
+
+PetscErrorCode KDTreeApply(KDTree tree, void(*unaryfunc)(void*))
+{
+  PetscErrorCode ierr;
+  PetscFunctionBeginUser;
+  if(!tree) SETERRQ(PETSC_COMM_WORLD,PETSC_ERR_ARG_NULL,"First argument to KDTreeApply cannot be NULL!");
+  tree_apply_ufunc(tree->root,unaryfunc);
+  PetscFunctionReturn(0);
+}
 
 PetscErrorCode KDTreeClear(KDTree tree)
 {

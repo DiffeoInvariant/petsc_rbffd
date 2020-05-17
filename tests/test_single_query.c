@@ -35,7 +35,7 @@ int main(int argc, char **argv)
   star3->x0 = -0.4; star3->y0 = 0.83; star3->z0 = 1.02;
   star3->m = 0.85;
 
-  ierr = KDTreeCreate(&tree, k);CHKERRQ(ierr);
+  ierr = KDTreeCreate(PETSC_COMM_WORLD,k,&tree);CHKERRQ(ierr);
   PetscPrintf(PETSC_COMM_WORLD, "Created tree\n");
   x[0] = star1->x0; x[1] = star1->y0; x[2] = star1->z0;
   ierr = KDTreeInsert(tree, x, star1);CHKERRQ(ierr);
@@ -59,7 +59,7 @@ int main(int argc, char **argv)
   PetscPrintf(PETSC_COMM_WORLD, "Result contains %d elements within distance 3.0.\n", k);
   
   ierr = KDValuesDestroy(results);CHKERRQ(ierr);
-  ierr = KDTreeDestroy(tree);CHKERRQ(ierr);
+  ierr = KDTreeDestroy(&tree);CHKERRQ(ierr);
 
   return 0;
 }

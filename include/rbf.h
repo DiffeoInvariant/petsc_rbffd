@@ -67,15 +67,19 @@ extern "C" {
 
   extern PetscErrorCode RBFProblemSetPolynomialDegree(RBFProblem prob, PetscInt degree);
 
-  /* locs is an array of Vecs, containing as many as there are spatial dimensions, and node_ctx is the context struct for the node (e.g. just a pointer to PetscReal for GA, etc) */
+  /* locs is an array of Vecs, containing as many as there are spatial dimensions, and node_ctx is the context struct for the node*/
   extern PetscErrorCode RBFProblemSetNodes(RBFProblem prob, Vec *locs, void *node_ctx);
+
+  extern PetscErrorCode RBFProblemSetNodesWithValues(RBFProblem prob, Vec node_vals, Vec *node_locs, void *node_ctx);
 
   extern PetscErrorCode RBFProblemGetTree(RBFProblem prob, KDTree *tree);
 
   extern PetscErrorCode RBFProblemGetWeights(RBFProblem prob);
 
   extern PetscErrorCode RBFProblemView(RBFProblem prob);
-  
+
+  extern PetscErrorCode RBFProblemInterpolateAtPoint(RBFProblem prob, const PetscScalar *point, PetscReal use_nodes_within_dist);
+
 
 #ifdef __cplusplus
 }

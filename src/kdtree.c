@@ -1,6 +1,6 @@
 #include "kdtree.h"
 #include <pthread.h>
-
+#include <petsc/private/petscimpl.h>
 struct kdbox {
   PetscInt    k;
   PetscScalar *min, *max;
@@ -22,11 +22,19 @@ struct result_node {
 };
 
 
+struct _p_kdtree_ops {
+  NodeDestructor       node_dtor;
+  struct result_node* (*resnode_factory)(void);
+  void                (*free_resnode)(struct result_node *);
+  PetscErrorCode      (*box_factory)(struct kdnode **node, const PetscScalar *log, void *data, PetscInt dir, PetscInt k);
+};
+  
+
 struct _p_kdtree {
+  PETSCHEADER(struct _p_kdtree_ops);
   PetscInt      k, N;
   struct kdnode *root;
   struct kdbox  *bounding_box;
-  NodeDestructor dtor;
 };
 
 struct _p_kd_values {
@@ -50,27 +58,43 @@ static struct kdbox* kdbox_copy(const struct kdbox *box);
 static PetscErrorCode kdbox_extend(struct kdbox *box, const PetscScalar *loc);
 static PetscErrorCode kdbox_square_dist(struct kdbox *box, const PetscScalar *loc, PetscReal *dsq);
 
+static PetscClassId KD_TREE_CLASSID;
 
-PetscErrorCode KDTreeCreate(KDTree *tree, PetscInt k)
+PetscErrorCode KDTreeCreate(MPI_Comm comm, PetscInt k, KDTree *tree)
 {
-  PetscErrorCode ierr;
+  PetscErrorCode   ierr;
+  static PetscBool registered_type=PETSC_FALSE;
+  KDTree           tr;
   PetscFunctionBeginUser;
-  ierr = PetscNew(tree);CHKERRQ(ierr);
-  (*tree)->N = 0;
-  (*tree)->k = k;
-  (*tree)->root = NULL;
-  (*tree)->bounding_box = NULL;
-  (*tree)->dtor = NULL;
-  PetscFunctionReturn(ierr);
+  *tree=NULL;
+  if (!registered_type) {
+    PetscClassIdRegister("K-d Tree",&KD_TREE_CLASSID);
+    registered_type=PETSC_TRUE;
+  }
+  ierr = PetscHeaderCreate(tr,KD_TREE_CLASSID,"KDTree","K-d Tree","",comm,KDTreeDestroy,NULL);CHKERRQ(ierr);
+
+  tr->k = k;
+  tr->N = 0;
+  
+  tr->ops->node_dtor=NULL;
+  /*default sequential because I haven't implemented MPI KD-trees yet*/
+  tr->ops->resnode_factory = allocate_result_node;
+  tr->ops->free_resnode = free_result_node;
+  tr->ops->box_factory = insert_box;
+  
+  *tree = tr;
+  PetscFunctionReturn(0);
 }
 
-PetscErrorCode KDTreeDestroy(KDTree tree)
+PetscErrorCode KDTreeDestroy(KDTree *tree)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  ierr = KDTreeClear(tree);CHKERRQ(ierr);
-  tree->k = 0;
-  ierr = PetscFree(tree);CHKERRQ(ierr);
+  if (!*tree) PetscFunctionReturn(0);
+  if (--((PetscObject)(*tree))->refct > 0) {*tree=NULL; PetscFunctionReturn(0);}
+  
+  ierr = KDTreeClear(*tree);CHKERRQ(ierr);
+  ierr = PetscHeaderDestroy(tree);
   PetscFunctionReturn(ierr);
 }
 
@@ -116,7 +140,7 @@ PetscErrorCode KDTreeClear(KDTree tree)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  clear_box(tree->root, tree->dtor);
+  clear_box(tree->root, tree->ops->node_dtor);
   tree->root = NULL;
   if(tree->bounding_box){
     ierr = kdbox_destroy(tree->bounding_box);CHKERRQ(ierr);
@@ -129,7 +153,7 @@ PetscErrorCode KDTreeClear(KDTree tree)
 PetscErrorCode KDTreeSetNodeDestructor(KDTree tree, NodeDestructor dtor)
 {
   PetscFunctionBeginUser;
-  tree->dtor = dtor;
+  tree->ops->node_dtor = dtor;
   PetscFunctionReturn(0);
 }
 
@@ -163,7 +187,7 @@ PetscErrorCode KDTreeInsert(KDTree tree, const PetscScalar *loc, void *node_data
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  ierr = insert_box(&tree->root, loc, node_data, 0, tree->k);CHKERRQ(ierr);
+  ierr = tree->ops->box_factory(&tree->root, loc, node_data, 0, tree->k);CHKERRQ(ierr);
   tree->N += 1;
   if(!(tree->bounding_box)){
     tree->bounding_box = kdbox_create(tree->k, loc, loc);
@@ -252,7 +276,7 @@ static PetscErrorCode KDValuesCreate(KDValues *vals, KDTree parent_tree)
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
   ierr = PetscNew(vals);CHKERRQ(ierr);
-  (*vals)->reslist = allocate_result_node();
+  (*vals)->reslist = parent_tree->ops->resnode_factory();
   if(!(*vals)->reslist){
     PetscFree(*vals);
     SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_MEM, "Could not allocate result list!\n");
@@ -279,7 +303,7 @@ PetscErrorCode KDTreeFindNearest(const KDTree tree, const PetscScalar *loc, KDVa
 
   
   ierr = PetscNew(&resset);CHKERRQ(ierr);
-  resset->reslist = allocate_result_node();
+  resset->reslist = tree->ops->resnode_factory();
   if(!resset->reslist){
     PetscFree(resset);
     SETERRQ(PETSC_COMM_WORLD, PETSC_ERR_MEM, "Could not allocate result list!\n");
@@ -495,7 +519,7 @@ PetscErrorCode KDValuesDestroy(KDValues vals)
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
   ierr = clear_result_list(vals);CHKERRQ(ierr);
-  free_result_node(vals->reslist);
+  vals->tree->ops->free_resnode(vals->reslist);
   ierr = PetscFree(vals);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }

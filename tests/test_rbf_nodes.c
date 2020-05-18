@@ -4,9 +4,9 @@
 int main(int argc, char **argv)
 {
 
-  PetscInt i,j, k=3, N=10000;
+  PetscInt i,j, k=3, N=100;
   PetscReal d, eps=0.001;
-  Vec       X[3];
+  Vec       V,X[3];
   PetscScalar val, *x, loc[3], eloc[3];
   RBFProblem prob;
   RBFNode    node, *nodes;
@@ -24,18 +24,22 @@ int main(int argc, char **argv)
     ierr = VecSetSizes(X[i], PETSC_DECIDE, N);CHKERRQ(ierr);
     ierr = VecGetArray(X[i], &x);CHKERRQ(ierr);
     for(j=0; j<N; ++j){
-      x[j] = 5*((PetscReal)((rand() / ((RAND_MAX + 1u)/30))) - 15.);
+      x[j] = 0.5*((PetscReal)((rand() / ((RAND_MAX + 1u)/30))) - 15.);
     }
     ierr = VecRestoreArray(X[i], &x);CHKERRQ(ierr);
   }
-
+  ierr = VecCreate(PETSC_COMM_WORLD, &V);CHKERRQ(ierr);
+  ierr = VecSetFromOptions(V);CHKERRQ(ierr);
+  ierr = VecSetSizes(V, PETSC_DECIDE, N);CHKERRQ(ierr);
+  ierr = VecSet(V,3.0);CHKERRQ(ierr);
   /* create problem data structures */
   ierr = RBFProblemCreate(PETSC_COMM_WORLD,k,&prob);CHKERRQ(ierr);
 
   ierr = RBFProblemSetPolynomialDegree(prob,0);CHKERRQ(ierr);
   ierr = RBFProblemSetType(prob,RBF_INTERPOLATE);CHKERRQ(ierr);
   ierr = RBFProblemSetNodeType(prob,RBF_GA,NULL);CHKERRQ(ierr);
-  ierr = RBFProblemSetNodes(prob,X,&eps);CHKERRQ(ierr);
+  ierr = RBFProblemSetNodesWithValues(prob,V,X,&eps);CHKERRQ(ierr);
+  ierr = RBFProblemSetNodeWeightRadius(prob,10.0);CHKERRQ(ierr);
   ierr = RBFProblemView(prob);CHKERRQ(ierr);
 
   for(i=0; i<k; ++i){
@@ -115,6 +119,10 @@ int main(int argc, char **argv)
   MatDestroy(&A);
   VecDestroy(&L);
   VecDestroy(&V);
+  #endif
+
+  #if 1
+  ierr = RBFProblemSetUp(prob);CHKERRQ(ierr);
   #endif
   
   ierr = KDValuesDestroy(nns);CHKERRQ(ierr);

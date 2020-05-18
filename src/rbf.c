@@ -25,16 +25,21 @@ typedef struct _p_rbf_node_ops *RBFNodeOps;
 
 struct _p_rbf_node {
   PETSCHEADER(struct _p_rbf_node_ops);
-  PetscInt       dims, poly_order;
+  PetscInt       dims, poly_order,stencil_size;
   PetscScalar    *loc, *centered_loc, val;
   RBFType        type;
+  RBFNode        *local_stencil;
 };
 
 
 struct _p_rbf_prob_ops {
   PetscErrorCode   (*interp_local_operator)(RBFProblem,PetscInt,RBFNode *,PetscScalar,const PetscScalar *,PetscInt);
   PetscErrorCode   (*interp_eval)(RBFProblem,PetscInt,RBFNode *,PetscScalar,const PetscScalar *,PetscInt,PetscScalar *);
+  PetscErrorCode   (*get_node_stencil)(RBFProblem,const PetscScalar *,PetscReal,PetscInt *,RBFNode **);
 };
+
+static PetscErrorCode rbf_node_get_stencil(RBFProblem prob, const PetscScalar *center_point, PetscReal stencil_rad, PetscInt *stencil_size, RBFNode **stencil);
+
 
 static PetscErrorCode rbf_interp_get_matrix(RBFProblem  prob,
 					    PetscInt    stencil_size,
@@ -47,7 +52,7 @@ static PetscErrorCode rbf_interp_evaluate_interpolant(RBFProblem prob,
 						      PetscInt stencil_size,
 						      RBFNode *stencil_nodes,
 						      PetscScalar coeff,
-						      const PetscScalar *target_pt,
+						      const PetscScalar *target_point,
 						      PetscInt global_weight_id,
 						      PetscScalar *val);
 
@@ -55,6 +60,7 @@ static PetscErrorCode rbf_interp_evaluate_interpolant(RBFProblem prob,
 struct _p_rbf_problem {
   PETSCHEADER(struct _p_rbf_prob_ops);
   PetscInt       dims,global_poly_order,N;
+  PetscReal      weight_radius;
   KDTree         tree;
   Vec            *node_points,*weights;
   RBFType        node_type;
@@ -140,14 +146,17 @@ PetscErrorCode RBFNodeDestroy(RBFNode *node)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  if(!*node) PetscFunctionReturn(0);
-  if(--((PetscObject)(*node))->refct > 0) { *node=NULL; PetscFunctionReturn(0);}
+  if (!*node) PetscFunctionReturn(0);
+  if (--((PetscObject)(*node))->refct > 0) { *node=NULL; PetscFunctionReturn(0);}
   
   ierr = PetscSpaceDestroy(&((*node)->ops->polyspace));CHKERRQ(ierr);
   ierr = PetscFree((*node)->loc);CHKERRQ(ierr);
   ierr = PetscFree((*node)->centered_loc);CHKERRQ(ierr);
-  if((*node)->ops->allocated_ctx){
+  if ((*node)->ops->allocated_ctx){
     ierr = PetscFree((*node)->ops->para_ctx);CHKERRQ(ierr);
+  }
+  if ((*node)->local_stencil) {
+    ierr = PetscFree((*node)->local_stencil);CHKERRQ(ierr);
   }
   ierr = PetscHeaderDestroy(node);CHKERRQ(ierr);
   PetscFunctionReturn(0);
@@ -394,6 +403,7 @@ PetscErrorCode RBFProblemCreate(MPI_Comm comm, PetscInt dims, RBFProblem *rbfpro
 
   prob->ops->interp_local_operator = rbf_interp_get_matrix;
   prob->ops->interp_eval = rbf_interp_evaluate_interpolant;
+  prob->ops->get_node_stencil = rbf_node_get_stencil;
   PetscOptionsBegin(comm,NULL,"RBF Problem options","");
   {
     PetscOptionsEnum("-rbf_type","Type of pre-set RBF to use","",RBF_type_names,(PetscEnum)ntype, (PetscEnum*)&ntype,NULL);
@@ -409,7 +419,7 @@ PetscErrorCode RBFProblemCreate(MPI_Comm comm, PetscInt dims, RBFProblem *rbfpro
 
   ierr = KDTreeCreate(comm,dims,&prob->tree);CHKERRQ(ierr);
   ierr = KDTreeSetNodeDestructor(prob->tree, (NodeDestructor)RBFNodeTreeDtor);CHKERRQ(ierr);
-  prob->setup = PETSC_TRUE;
+  prob->setup = PETSC_FALSE;
   
   *rbfprob = prob;
   PetscFunctionReturn(0);
@@ -517,7 +527,49 @@ PetscErrorCode RBFProblemSetNodes(RBFProblem prob, Vec *locs, void *node_ctx)
     ierr = RBFNodeSetPolyOrder(prob->nodes[j],prob->global_poly_order);CHKERRQ(ierr);
     ierr = KDTreeInsert(prob->tree,loc,prob->nodes[j]);CHKERRQ(ierr);
   }
-  prob->setup = PETSC_TRUE;
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode RBFProblemSetNodesWithValues(RBFProblem prob, Vec node_vals, Vec *locs, void *node_ctx)
+{
+  PetscErrorCode    ierr;
+  PetscInt          i, j, k;
+  const PetscScalar *x, *v;
+  PetscFunctionBeginUser;
+
+  ierr = KDTreeGetK(prob->tree,&k);
+  PetscInt ssz,sz[k];
+  PetscScalar loc[k];
+  ierr = VecGetLocalSize(node_vals,&ssz);CHKERRQ(ierr);
+  for (i=0; i<k; ++i) {
+    ierr = VecGetLocalSize(locs[i],&sz[i]);CHKERRQ(ierr);
+    if (sz[i] != ssz) {
+      SETERRQ3(PetscObjectComm((PetscObject)prob), 1, "RBF node location vectors must have the same number of components as there are node values (%d), but dimension %d has %d components!\n", ssz, i, sz[i]);
+    }
+  }
+  prob->N = sz[0];
+  ierr = PetscCalloc4(sz[0],&prob->nodes,sz[0],&prob->A,sz[0],&prob->weights,k,&prob->node_points);CHKERRQ(ierr);
+  /* ^ confirms that sz[i] are equal for all i */
+  for (i=0; i<k; ++i) {
+    ierr = VecDuplicate(locs[i],&prob->node_points[i]);CHKERRQ(ierr);
+    ierr = VecCopy(locs[i],prob->node_points[i]);CHKERRQ(ierr);
+  }
+
+  ierr = VecGetArrayRead(node_vals,&v);CHKERRQ(ierr);
+  for(j=0; j<ssz; ++j){
+    for(i=0; i<k; ++i){
+      ierr = VecGetArrayRead(locs[i],&x);CHKERRQ(ierr);
+      loc[i] = x[j];
+      ierr = VecRestoreArrayRead(locs[i],&x);CHKERRQ(ierr);
+    }
+    ierr = RBFNodeCreate(PetscObjectComm((PetscObject)prob),k,&(prob->nodes[j]));CHKERRQ(ierr);
+    ierr = RBFNodeSetType(prob->nodes[j],prob->node_type,node_ctx);CHKERRQ(ierr);
+    ierr = RBFNodeSetLocation(prob->nodes[j],loc);CHKERRQ(ierr);
+    ierr = RBFNodeSetPolyOrder(prob->nodes[j],prob->global_poly_order);CHKERRQ(ierr);
+    prob->nodes[j]->val = v[j];
+    ierr = KDTreeInsert(prob->tree,loc,prob->nodes[j]);CHKERRQ(ierr);
+  }
+  ierr = VecRestoreArrayRead(node_vals,&v);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -694,5 +746,67 @@ static PetscErrorCode rbf_interp_evaluate_interpolant(RBFProblem prob,
   /*basis functions dot weights */
   ierr = VecDot(L,prob->weights[global_weight_id],val);CHKERRQ(ierr);
   ierr = VecDestroy(&L);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+
+PetscErrorCode RBFProblemSetNodeWeightRadius(RBFProblem prob, PetscReal radius)
+{
+  PetscInt i;
+  PetscFunctionBeginUser;
+  if (radius <= 0.0) {
+    SETERRQ1(PetscObjectComm((PetscObject)prob),PETSC_ERR_ARG_OUTOFRANGE,"Must pass a positive radius to RBFProblemSetNodeWeightRadius, not %g!\n",radius);
+  }
+  prob->weight_radius = radius;
+  PetscFunctionReturn(0);
+}
+
+static PetscErrorCode rbf_node_get_stencil(RBFProblem prob, const PetscScalar *center_point, PetscReal stencil_rad, PetscInt *stencil_size, RBFNode **stencil)
+{
+  PetscErrorCode ierr;
+  KDValues       nodes;
+  RBFNode        node,snode;
+  PetscInt       i,j;
+  PetscFunctionBeginUser;
+  ierr = KDTreeFindWithinRange(prob->tree,center_point,stencil_rad,&nodes);CHKERRQ(ierr);
+  ierr = KDValuesSize(nodes,stencil_size);CHKERRQ(ierr);
+  if (*stencil_size == 0) {
+    SETERRQ(PetscObjectComm((PetscObject)prob),1,"Stencil for a node has size 0! Use a larger stencil radius!\n");
+  }
+  ierr = PetscCalloc1(*stencil_size,stencil);CHKERRQ(ierr);
+  /*store the stencil in the node as well */
+  KDValuesGetNodeData(nodes,(void**)&snode,NULL);CHKERRQ(ierr);
+  snode->stencil_size = *stencil_size;
+  ierr = PetscCalloc1(*stencil_size,&snode->local_stencil);CHKERRQ(ierr);
+  i=-1;
+  j=0;
+  while (i != KDValuesEnd(nodes)) {
+    ierr = KDValuesGetNodeData(nodes,(void**)&node,NULL);CHKERRQ(ierr);
+    (*stencil)[j] = snode->local_stencil[j] = node;
+    ++j;
+    i = KDValuesNext(nodes);CHKERRQ(ierr);
+  }
+  ierr = KDValuesDestroy(nodes);CHKERRQ(ierr);
+  PetscFunctionReturn(0);
+}
+
+PetscErrorCode RBFProblemSetUp(RBFProblem prob)
+{
+  PetscErrorCode ierr;
+  RBFNode        *stencil;
+  PetscInt       stencil_size,i,j;
+  PetscReal      *centerloc;
+  PetscFunctionBeginUser;
+  if (prob->setup) PetscFunctionReturn(0);
+  ierr = PetscCalloc1(prob->dims,&centerloc);CHKERRQ(ierr);
+  for (i=0; i<prob->N; ++i) {
+    for (j=0; j<prob->dims; ++j) {
+      centerloc[j] = prob->nodes[i]->loc[j];
+    }
+    ierr = prob->ops->get_node_stencil(prob,centerloc,prob->weight_radius,&stencil_size,&stencil);CHKERRQ(ierr);
+    ierr = prob->ops->interp_local_operator(prob,stencil_size,stencil,1.0,centerloc,i);CHKERRQ(ierr);
+  }
+  
+  prob->setup = PETSC_TRUE;
   PetscFunctionReturn(0);
 }

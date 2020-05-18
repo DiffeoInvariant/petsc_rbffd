@@ -70,7 +70,11 @@ extern "C" {
   /* locs is an array of Vecs, containing as many as there are spatial dimensions, and node_ctx is the context struct for the node*/
   extern PetscErrorCode RBFProblemSetNodes(RBFProblem prob, Vec *locs, void *node_ctx);
 
-  extern PetscErrorCode RBFProblemSetNodesWithValues(RBFProblem prob, Vec node_vals, Vec *node_locs, void *node_ctx);
+  extern PetscErrorCode RBFProblemSetNodesWithValues(RBFProblem prob, Vec node_vals, Vec *locs, void *node_ctx);
+
+  extern PetscErrorCode RBFProblemSetNodeWeightRadius(RBFProblem prob, PetscReal radius);
+
+  extern PetscErrorCode RBFProblemSetUp(RBFProblem prob);
 
   extern PetscErrorCode RBFProblemGetTree(RBFProblem prob, KDTree *tree);
 

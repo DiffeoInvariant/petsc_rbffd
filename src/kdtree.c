@@ -333,7 +333,7 @@ PetscErrorCode KDTreeFindNearest(const KDTree tree, const PetscScalar *loc, KDVa
     *nearest = resset;
     PetscFunctionReturn(0);
   } else {
-    KDValuesDestroy(resset);
+    KDValuesDestroy(&resset);
     SETERRQ(PETSC_COMM_WORLD, 1, "KDTreeFindNearest failed to find a nearest node");
   }
 }
@@ -417,10 +417,11 @@ static struct result_node* allocate_result_node()
 
 static void free_result_node(struct result_node *node)
 {
-  pthread_mutex_lock(&node_alloc_mutex);
-  node->next = free_nodes;
-  free_nodes = node;
-  pthread_mutex_unlock(&node_alloc_mutex);
+  if (node) {
+    pthread_mutex_lock(&node_alloc_mutex);
+    PetscFree(node);
+    pthread_mutex_unlock(&node_alloc_mutex);
+  } 
 }
 
 static PetscErrorCode result_list_insert(struct result_node *list, struct kdnode *dat, PetscReal dist)
@@ -514,13 +515,15 @@ PetscErrorCode KDValuesGetNodeDistance(const KDValues vals, PetscReal *dist)
   PetscFunctionReturn(0);
 }
   
-PetscErrorCode KDValuesDestroy(KDValues vals)
+PetscErrorCode KDValuesDestroy(KDValues *vals)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  ierr = clear_result_list(vals);CHKERRQ(ierr);
-  vals->tree->ops->free_resnode(vals->reslist);
-  ierr = PetscFree(vals);CHKERRQ(ierr);
+  ierr = clear_result_list(*vals);CHKERRQ(ierr);
+  /*(*vals)->tree->ops->free_resnode((*vals)->reslist);*/
+  /* free nodes is a work pointer, maybe I should wrap this in an op or some other function */
+  ierr = PetscFree(free_nodes);
+  ierr = PetscFree(*vals);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
   
@@ -535,8 +538,7 @@ kdbox_create(PetscInt k, const PetscScalar *min, const PetscScalar *max)
   box->k = k;
   ierr = PetscCalloc2(k, &(box->min), k, &(box->max));
   if(ierr){
-    if(box->min) PetscFree(box->min);
-    if(box->max) PetscFree(box->max);
+    PetscFree2(box->min,box->max);
     PetscFree(box);
     return NULL;
   }
@@ -550,11 +552,8 @@ static PetscErrorCode kdbox_destroy(struct kdbox *box)
 {
   PetscErrorCode ierr;
   PetscFunctionBeginUser;
-  if(box->min){
-    ierr = PetscFree(box->min);CHKERRQ(ierr);
-  }
-  if(box->max){
-    ierr = PetscFree(box->max);CHKERRQ(ierr);
+  if(box->min || box->max){
+    ierr = PetscFree2(box->min,box->max);CHKERRQ(ierr);
   }
   ierr = PetscFree(box);CHKERRQ(ierr);
   PetscFunctionReturn(0);

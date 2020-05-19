@@ -57,7 +57,7 @@ extern "C" {
 
   PetscErrorCode KDValuesNext(KDValues vals);
 
-  PetscErrorCode KDValuesDestroy(KDValues vals);
+  PetscErrorCode KDValuesDestroy(KDValues *vals);
   
 
 #ifdef __cplusplus

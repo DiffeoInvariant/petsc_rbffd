@@ -150,8 +150,7 @@ PetscErrorCode RBFNodeDestroy(RBFNode *node)
   if (--((PetscObject)(*node))->refct > 0) { *node=NULL; PetscFunctionReturn(0);}
   
   ierr = PetscSpaceDestroy(&((*node)->ops->polyspace));CHKERRQ(ierr);
-  ierr = PetscFree((*node)->loc);CHKERRQ(ierr);
-  ierr = PetscFree((*node)->centered_loc);CHKERRQ(ierr);
+  ierr = PetscFree2((*node)->loc,(*node)->centered_loc);CHKERRQ(ierr);
   if ((*node)->ops->allocated_ctx){
     ierr = PetscFree((*node)->ops->para_ctx);CHKERRQ(ierr);
   }
@@ -341,6 +340,7 @@ PetscErrorCode RBFNodeEvaluateAtPoint(const RBFNode node, PetscScalar *point, Pe
   for(i=0; i<N; ++i){
     *phi += vals[i];
   }
+  ierr = PetscFree(vals);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -440,20 +440,20 @@ PetscErrorCode RBFProblemDestroy(RBFProblem *prob)
 	ierr = VecDestroy(&((*prob)->weights[i]));CHKERRQ(ierr);
       }
     }
-  } 
-  ierr = PetscFree((*prob)->A);
-  ierr = PetscFree((*prob)->weights);
+    
+  }
+
   if ((*prob)->node_points) {
     for (i=0; i<(*prob)->dims; ++i) {
       ierr = VecDestroy(&((*prob)->node_points[i]));CHKERRQ(ierr);
     }
   }
-  ierr = PetscFree((*prob)->node_points);CHKERRQ(ierr);
+
   
   /* NOTE: KDTreeDestroy calls RBFNodeDestroy on all of the allocated nodes */
   ierr = KDTreeDestroy(&((*prob)->tree));CHKERRQ(ierr);
-  if ((*prob)->nodes) {
-    ierr = PetscFree((*prob)->nodes);CHKERRQ(ierr);
+  if ((*prob)->setup) {
+    ierr = PetscFree4((*prob)->nodes,(*prob)->A,(*prob)->weights,(*prob)->node_points);CHKERRQ(ierr);
   }
   ierr = TSDestroy(&((*prob)->ts));CHKERRQ(ierr);
   ierr = KSPDestroy(&((*prob)->ksp));CHKERRQ(ierr);
@@ -768,12 +768,15 @@ static PetscErrorCode rbf_node_get_stencil(RBFProblem prob, const PetscScalar *c
   RBFNode        node,snode;
   PetscInt       i,j;
   PetscFunctionBeginUser;
+  /*ERROR: MEMORY LEAK SOMEWHERE IN THIS FUNCTION */
   ierr = KDTreeFindWithinRange(prob->tree,center_point,stencil_rad,&nodes);CHKERRQ(ierr);
   ierr = KDValuesSize(nodes,stencil_size);CHKERRQ(ierr);
   if (*stencil_size == 0) {
     SETERRQ(PetscObjectComm((PetscObject)prob),1,"Stencil for a node has size 0! Use a larger stencil radius!\n");
   }
+
   ierr = PetscCalloc1(*stencil_size,stencil);CHKERRQ(ierr);
+  
   /*store the stencil in the node as well */
   KDValuesGetNodeData(nodes,(void**)&snode,NULL);CHKERRQ(ierr);
   snode->stencil_size = *stencil_size;
@@ -786,7 +789,7 @@ static PetscErrorCode rbf_node_get_stencil(RBFProblem prob, const PetscScalar *c
     ++j;
     i = KDValuesNext(nodes);CHKERRQ(ierr);
   }
-  ierr = KDValuesDestroy(nodes);CHKERRQ(ierr);
+  ierr = KDValuesDestroy(&nodes);CHKERRQ(ierr);
   PetscFunctionReturn(0);
 }
 
@@ -794,7 +797,7 @@ PetscErrorCode RBFProblemSetUp(RBFProblem prob)
 {
   PetscErrorCode ierr;
   RBFNode        *stencil;
-  PetscInt       stencil_size,i,j;
+  PetscInt       stencil_size,i,j,k;
   PetscReal      *centerloc;
   PetscFunctionBeginUser;
   if (prob->setup) PetscFunctionReturn(0);
@@ -805,8 +808,10 @@ PetscErrorCode RBFProblemSetUp(RBFProblem prob)
     }
     ierr = prob->ops->get_node_stencil(prob,centerloc,prob->weight_radius,&stencil_size,&stencil);CHKERRQ(ierr);
     ierr = prob->ops->interp_local_operator(prob,stencil_size,stencil,1.0,centerloc,i);CHKERRQ(ierr);
+    ierr = PetscFree(stencil);CHKERRQ(ierr);
+    
   }
-  
+  ierr = PetscFree(centerloc);
   prob->setup = PETSC_TRUE;
   PetscFunctionReturn(0);
 }

@@ -118,14 +118,13 @@ int main(int argc, char **argv)
   KSPDestroy(&ksp);
   MatDestroy(&A);
   VecDestroy(&L);
-  VecDestroy(&V);
   #endif
 
   #if 1
   ierr = RBFProblemSetUp(prob);CHKERRQ(ierr);
   #endif
-  
-  ierr = KDValuesDestroy(nns);CHKERRQ(ierr);
+  VecDestroy(&V);
+  ierr = KDValuesDestroy(&nns);CHKERRQ(ierr);
   ierr = RBFProblemDestroy(&prob);CHKERRQ(ierr);
   
   ierr = PetscFinalize();

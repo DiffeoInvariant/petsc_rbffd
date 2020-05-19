@@ -51,14 +51,14 @@ int main(int argc, char **argv)
 
   ierr = KDValuesGetNodeData(results, (void**)&star1, NULL);CHKERRQ(ierr);
   PetscPrintf(PETSC_COMM_WORLD, "Closest node to (-0.4, 0.83, 1.02): (%.3f, %.3f, %.3f).\n", star1->x0, star1->y0, star1->z0);
-  ierr = KDValuesDestroy(results);CHKERRQ(ierr);
+  ierr = KDValuesDestroy(&results);CHKERRQ(ierr);
 
   x[0] = 0.0; x[1] = 0.0; x[2] = 0.0;
   ierr = KDTreeFindWithinRange(tree, x, 3.0, &results);CHKERRQ(ierr);
   ierr = KDValuesSize(results, &k);CHKERRQ(ierr);
   PetscPrintf(PETSC_COMM_WORLD, "Result contains %d elements within distance 3.0.\n", k);
   
-  ierr = KDValuesDestroy(results);CHKERRQ(ierr);
+  ierr = KDValuesDestroy(&results);CHKERRQ(ierr);
   ierr = KDTreeDestroy(&tree);CHKERRQ(ierr);
 
   return 0;
